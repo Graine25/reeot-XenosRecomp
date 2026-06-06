@@ -54,7 +54,11 @@ IDxcBlob* DxcCompiler::compile(const std::string& shaderSource, bool compilePixe
 
     args[argCount++] = L"-Qstrip_debug";
 
-#ifdef UNLEASHED_RECOMP
+#ifdef REBLUE_RECOMP
+    args[argCount++] = L"-DREBLUE_RECOMP";
+#elif REEOT_RECOMP
+    args[argCount++] = L"-DREEOT_RECOMP";
+#elif defined(UNLEASHED_RECOMP)
     args[argCount++] = L"-DUNLEASHED_RECOMP";
 #endif
 
