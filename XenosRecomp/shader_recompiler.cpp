@@ -1254,8 +1254,14 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         if (constantInfo->registerSet == RegisterSet::Bool)
         {
             const char* constantName = reinterpret_cast<const char*>(constantTableData + constantInfo->name);
+#ifdef REEOT_RECOMP
+            const uint32_t unifiedBit = uint32_t(constantInfo->registerIndex) + (isPixelShader ? 128u : 0u);
+            println("\t#define {} BOOL_BIT({})", constantName, unifiedBit);
+            boolConstants.emplace(unifiedBit, constantName);
+#else
             println("\t#define {} (1 << {})", constantName, constantInfo->registerIndex + (isPixelShader ? 16 : 0));
             boolConstants.emplace(constantInfo->registerIndex, constantName);
+#endif
         }
     }
 
@@ -1630,7 +1636,24 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                 address = cfInstr.condExec.address;
                 count = cfInstr.condExec.count;
                 sequence = cfInstr.condExec.sequence;
+#ifdef REEOT_RECOMP
+                shouldReturn = (cfInstr.opcode == ControlFlowOpcode::CondExecEnd ||
+                                cfInstr.opcode == ControlFlowOpcode::CondExecPredCleanEnd);
+                {
+                    indent();
+                    auto findResult = boolConstants.find(cfInstr.condExec.boolAddress);
+                    if (findResult != boolConstants.end())
+                        println("if ({}{})", cfInstr.condExec.condition ? "" : "!", findResult->second);
+                    else
+                        println("if ({}BOOL_BIT({}))", cfInstr.condExec.condition ? "" : "!", uint32_t(cfInstr.condExec.boolAddress));
+                    indent();
+                    out += "{\n";
+                    ++indentation;
+                    shouldCloseCurlyBracket = true;
+                }
+#else
                 shouldReturn = (cfInstr.opcode == ControlFlowOpcode::CondExecEnd || cfInstr.opcode == ControlFlowOpcode::CondExecEnd);
+#endif
                 break;
 
             case ControlFlowOpcode::CondExecPred:
@@ -1694,11 +1717,20 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                     }
                     else
                     {
+#ifdef REEOT_RECOMP
+                        const bool jumpIfSet = cfInstr.condJmp.condition ^ simpleControlFlow;
+                        auto findResult = boolConstants.find(cfInstr.condJmp.boolAddress);
+                        if (findResult != boolConstants.end())
+                            println("if ({}{})", jumpIfSet ? "" : "!", findResult->second);
+                        else
+                            println("if ({}BOOL_BIT({}))", jumpIfSet ? "" : "!", uint32_t(cfInstr.condJmp.boolAddress));
+#else
                         auto findResult = boolConstants.find(cfInstr.condJmp.boolAddress);
                         if (findResult != boolConstants.end())
                             println("if ((g_Booleans & {}) {}= 0)", findResult->second, cfInstr.condJmp.condition ^ simpleControlFlow ? "!" : "=");
                         else
                             println("if (b{} {}= 0)", uint32_t(cfInstr.condJmp.boolAddress), cfInstr.condJmp.condition ^ simpleControlFlow ? "!" : "=");
+#endif
                     }
 
                     if (simpleControlFlow)
