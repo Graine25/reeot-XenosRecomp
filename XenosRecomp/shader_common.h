@@ -10,6 +10,10 @@
     #define SPEC_CONSTANT_REVERSE_Z         (1 << 4)
 #endif
 
+#ifdef REEOT_RECOMP
+    #define SPEC_CONSTANT_SINT_TEXCOORD     (1 << 2)
+#endif
+
 #if !defined(__cplusplus) || defined(__INTELLISENSE__)
 
 #define FLT_MIN asfloat(0xff7fffff)
@@ -192,6 +196,36 @@ float4 tfetchCube(uint resourceDescriptorIndex, uint samplerDescriptorIndex, flo
     return g_TextureCubeDescriptorHeap[resourceDescriptorIndex].Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex], cubeMapData.cubeMapDirections[texCoord.z]);
 }
 
+#ifdef REEOT_RECOMP
+float4 tfetchR11G11B10(float4 value)
+{
+    if (g_SpecConstants() & SPEC_CONSTANT_R11G11B10_NORMAL)
+    {
+        uint v = asuint(value.x);
+        return float4(
+            (v & 0x00000400 ? -1.0 : 0.0) + ((v & 0x3FF) / 1024.0),
+            (v & 0x00200000 ? -1.0 : 0.0) + (((v >> 11) & 0x3FF) / 1024.0),
+            (v & 0x80000000 ? -1.0 : 0.0) + (((v >> 22) & 0x1FF) / 512.0),
+            0.0);
+    }
+    return value;
+}
+
+float4 swapFloats(uint swappedMask, float4 value, uint semanticIndex)
+{
+    return (swappedMask & (1u << semanticIndex)) != 0 ? value.yxwz : value;
+}
+
+float4 sintTexcoord(uint mask, float4 value, uint semanticIndex)
+{
+    if ((mask & (1u << semanticIndex)) != 0)
+    {
+        int4 si = (int4(asuint(value)) << 16) >> 16;
+        return float4(si);
+    }
+    return value;
+}
+#else
 float4 tfetchR11G11B10(uint4 value)
 {
     if (g_SpecConstants() & SPEC_CONSTANT_R11G11B10_NORMAL)
@@ -212,6 +246,7 @@ float4 tfetchTexcoord(uint swappedTexcoords, float4 value, uint semanticIndex)
 {
     return (swappedTexcoords & (1ull << semanticIndex)) != 0 ? value.yxwz : value;
 }
+#endif
 
 float4 cube(float4 value, inout CubeMapData cubeMapData)
 {

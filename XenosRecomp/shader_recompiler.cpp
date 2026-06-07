@@ -18,11 +18,20 @@ static constexpr const char* USAGE_TYPES[] =
     "float4", // POSITION
     "float4", // BLENDWEIGHT
     "uint4", // BLENDINDICES
+#ifdef REEOT_RECOMP
+    "float4", // NORMAL
+#else
     "uint4", // NORMAL
+#endif
     "float4", // PSIZE
     "float4", // TEXCOORD
+#ifdef REEOT_RECOMP
+    "float4", // TANGENT
+    "float4", // BINORMAL
+#else
     "uint4", // TANGENT
     "uint4", // BINORMAL
+#endif
     "float4", // TESSFACTOR
     "float4", // POSITIONT
     "float4", // COLOR
@@ -179,6 +188,33 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
     auto findResult = vertexElements.find(address);
     assert(findResult != vertexElements.end());
 
+#ifdef REEOT_RECOMP
+    switch (findResult->second.usage)
+    {
+    case DeclUsage::Normal:
+        specConstantsMask |= SPEC_CONSTANT_R11G11B10_NORMAL;
+        print("tfetchR11G11B10(swapFloats(g_SwappedNormals, ");
+        break;
+    case DeclUsage::Tangent:
+        specConstantsMask |= SPEC_CONSTANT_R11G11B10_NORMAL;
+        print("tfetchR11G11B10(swapFloats(g_SwappedTangents, ");
+        break;
+    case DeclUsage::Binormal:
+        specConstantsMask |= SPEC_CONSTANT_R11G11B10_NORMAL;
+        print("tfetchR11G11B10(swapFloats(g_SwappedBinormals, ");
+        break;
+    case DeclUsage::BlendWeight:
+        print("swapFloats(g_SwappedBlendWeights, ");
+        break;
+    case DeclUsage::TexCoord:
+        specConstantsMask |= SPEC_CONSTANT_SINT_TEXCOORD;
+        print("sintTexcoord(g_SintTexcoords, swapFloats(g_SwappedTexcoords, ");
+        break;
+    case DeclUsage::Position:
+        print("swapFloats(g_SwappedPositions, ");
+        break;
+    }
+#else
     switch (findResult->second.usage)
     {
     case DeclUsage::Normal:
@@ -192,9 +228,30 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
         print("tfetchTexcoord(g_SwappedTexcoords, ");
         break;
     }
+#endif
 
     print("i{}{}", USAGE_VARIABLES[uint32_t(findResult->second.usage)], uint32_t(findResult->second.usageIndex));
 
+#ifdef REEOT_RECOMP
+    switch (findResult->second.usage)
+    {
+    case DeclUsage::Normal:
+    case DeclUsage::Tangent:
+    case DeclUsage::Binormal:
+        print(", {}))", uint32_t(findResult->second.usageIndex));
+        break;
+
+    case DeclUsage::TexCoord:
+        print(", {}), {})", uint32_t(findResult->second.usageIndex),
+              uint32_t(findResult->second.usageIndex));
+        break;
+
+    case DeclUsage::BlendWeight:
+    case DeclUsage::Position:
+        print(", {})", uint32_t(findResult->second.usageIndex));
+        break;
+    }
+#else
     switch (findResult->second.usage)
     {
     case DeclUsage::Normal:
@@ -207,6 +264,7 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
         print(", {})", uint32_t(findResult->second.usageIndex));
         break;
     }
+#endif
 
     out += '.';
     printDstSwizzle(instr.dstSwizzle, true);
@@ -1330,6 +1388,9 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
             out += '\t';
 
+#ifdef REEOT_RECOMP
+            print("[[vk::location({})]] ", i);
+#else
             for (auto& usageLocation : USAGE_LOCATIONS)
             {
                 if (usageLocation.usage == vertexElement.usage && usageLocation.usageIndex == vertexElement.usageIndex)
@@ -1338,6 +1399,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                     break;
                 }
             }
+#endif
 
             println("in {0} i{1}{2} : {3}{2},", usageType, USAGE_VARIABLES[uint32_t(vertexElement.usage)],
                 uint32_t(vertexElement.usageIndex), USAGE_SEMANTICS[uint32_t(vertexElement.usage)]);
