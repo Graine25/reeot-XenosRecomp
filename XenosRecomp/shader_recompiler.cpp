@@ -1255,6 +1255,21 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         }
     }
 
+#ifdef REEOT_RECOMP
+    for (uint32_t r = 0; r < 16; r++)
+    {
+        if (samplers.find(r) != samplers.end())
+            continue;
+        for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
+        {
+            println("#define s{}_Texture{}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+                r, TEXTURE_DIMENSIONS[j], j * 64 + r * 4);
+        }
+        println("#define s{}_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+            r, std::size(TEXTURE_DIMENSIONS) * 64 + r * 4);
+    }
+#endif
+
     out += "\n#else\n\n";
 
     println("cbuffer {}ShaderConstants : register(b{}, space4)", isPixelShader ? "Pixel" : "Vertex", isPixelShader ? 1 : 0);
@@ -1314,6 +1329,21 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                 constantName, 4 * std::size(TEXTURE_DIMENSIONS) + constantInfo->registerIndex / 4, SWIZZLES[constantInfo->registerIndex % 4]);
         }
     }
+
+#ifdef REEOT_RECOMP
+    for (uint32_t r = 0; r < 16; r++)
+    {
+        if (samplers.find(r) != samplers.end())
+            continue;
+        for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
+        {
+            println("\tuint s{}_Texture{}DescriptorIndex : packoffset(c{}.{});",
+                r, TEXTURE_DIMENSIONS[j], j * 4 + r / 4, SWIZZLES[r % 4]);
+        }
+        println("\tuint s{}_SamplerDescriptorIndex : packoffset(c{}.{});",
+            r, 4 * std::size(TEXTURE_DIMENSIONS) + r / 4, SWIZZLES[r % 4]);
+    }
+#endif
 
     out += "\tDEFINE_SHARED_CONSTANTS();\n";
     out += "};\n\n";
