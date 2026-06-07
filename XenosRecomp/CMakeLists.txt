@@ -39,6 +39,8 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "Ap
     endif()
 endif()
 
+target_compile_definitions(XenosRecomp PRIVATE REEOT_RECOMP)
+
 if (WIN32)
     target_compile_definitions(XenosRecomp PRIVATE _CRT_SECURE_NO_WARNINGS)
     add_custom_command(TARGET XenosRecomp POST_BUILD
