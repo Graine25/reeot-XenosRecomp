@@ -1007,7 +1007,12 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
             break;
 
         case AluScalarOpcode::SetpInv:
+#ifdef REEOT_RECOMP
+            // PRED_SETINV: src==1 -> 0, src==0 -> 1, else passthrough.
+            print("{0} == 1.0 ? 0.0 : ({0} == 0.0 ? 1.0 : {0})", op(SCALAR_0));
+#else
             print("{0} == 0.0 ? 1.0 : {0}", op(SCALAR_0));
+#endif
             break;
 
         case AluScalarOpcode::SetpPop:
@@ -1560,9 +1565,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
     if (!isPixelShader)
     {
-    #ifdef UNLEASHED_RECOMP
+    #if defined(UNLEASHED_RECOMP)
         if (!hasMtxProjection)
             out += "\toPos = 0.0;\n";
+    #elif defined(REEOT_RECOMP)
+        out += "\toPos = 0.0;\n";
     #endif
 
         for (auto& [usage, usageIndex] : INTERPOLATORS)
