@@ -1220,9 +1220,19 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                 println("#define {} vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + {}, 0x10)",
                     constantName, shaderName, constantInfo->registerIndex * 16);
             }
-            
+
+#ifdef REEOT_RECOMP
+            for (uint16_t j = 0; j < constantInfo->registerCount; j++)
+            {
+                uint32_t reg = constantInfo->registerIndex + j;
+                auto it = float4Constants.find(reg);
+                if (it == float4Constants.end() || it->second->registerCount < constantInfo->registerCount)
+                    float4Constants[reg] = constantInfo;
+            }
+#else
             for (uint16_t j = 0; j < constantInfo->registerCount; j++)
                 float4Constants.emplace(constantInfo->registerIndex + j, constantInfo);
+#endif
 
             break;
         }
@@ -1257,6 +1267,12 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
         if (constantInfo->registerSet == RegisterSet::Float4)
         {
+#ifdef REEOT_RECOMP
+            auto winner = float4Constants.find(constantInfo->registerIndex);
+            if (winner == float4Constants.end() || winner->second != constantInfo)
+                continue;
+#endif
+
             const char* constantName = reinterpret_cast<const char*>(constantTableData + constantInfo->name);
 
             print("\tfloat4 {}", constantName);
