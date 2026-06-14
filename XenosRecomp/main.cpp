@@ -80,20 +80,38 @@ int main(int argc, char** argv)
     auto includeData = readAllBytes(includeInput, includeSize);
     std::string_view include(reinterpret_cast<const char*>(includeData.get()), includeSize);
 
-    if (std::filesystem::is_directory(input))
+    // Optional per-shader HLSL dump mode: scans the input (file or directory) for shader
+    // containers and writes each recompiled shader as <output>/<hash>.hlsl. The hash matches
+    // the XXH3-64 lookup key used by the runtime shader cache, so the native renderer can map
+    // a guest shader straight to its HLSL by hash.
+    bool hlslDump = false;
+#ifndef XENOS_RECOMP_INPUT
+    if (argc >= 5 && std::string_view(argv[4]) == "--hlsl")
+        hlslDump = true;
+#endif
+
+    if (std::filesystem::is_directory(input) || hlslDump)
     {
         std::vector<std::unique_ptr<uint8_t[]>> files;
         std::map<XXH64_hash_t, RecompiledShader> shaders;
 
-        for (auto& file : std::filesystem::recursive_directory_iterator(input))
+        // Gather the files to scan: every file under a directory, or just the single input file.
+        std::vector<std::string> inputPaths;
+        if (std::filesystem::is_directory(input))
         {
-            if (std::filesystem::is_directory(file))
-            {
-                continue;
-            }
-            
+            for (auto& file : std::filesystem::recursive_directory_iterator(input))
+                if (!std::filesystem::is_directory(file))
+                    inputPaths.push_back(file.path().string());
+        }
+        else
+        {
+            inputPaths.push_back(input);
+        }
+
+        for (auto& path : inputPaths)
+        {
             size_t fileSize = 0;
-            auto fileData = readAllBytes(file.path().string().c_str(), fileSize);
+            auto fileData = readAllBytes(path.c_str(), fileSize);
             bool foundAny = false;
 
             for (size_t i = 0; fileSize > sizeof(ShaderContainer) && i < fileSize - sizeof(ShaderContainer) - 1;)
@@ -124,6 +142,37 @@ int main(int argc, char** argv)
 
             if (foundAny)
                 files.emplace_back(std::move(fileData));
+        }
+
+        if (hlslDump)
+        {
+            std::filesystem::create_directories(output);
+
+            std::atomic<uint32_t> dumped = 0;
+            std::atomic<uint32_t> failed = 0;
+            std::for_each(std::execution::par_unseq, shaders.begin(), shaders.end(), [&](auto& hashShaderPair)
+                {
+                    const XXH64_hash_t hash = hashShaderPair.first;
+
+                    thread_local ShaderRecompiler recompiler;
+                    recompiler = {};
+                    try
+                    {
+                        recompiler.recompile(hashShaderPair.second.data, include);
+                    }
+                    catch (...)
+                    {
+                        ++failed;
+                        return;
+                    }
+
+                    std::string fileName = fmt::format("{}/{:016x}.hlsl", output, hash);
+                    writeAllBytes(fileName.c_str(), recompiler.out.data(), recompiler.out.size());
+                    ++dumped;
+                });
+
+            fmt::println("Dumped {} HLSL shaders to {} ({} failed to recompile).", dumped.load(), output, failed.load());
+            return 0;
         }
 
         std::atomic<uint32_t> progress = 0;
