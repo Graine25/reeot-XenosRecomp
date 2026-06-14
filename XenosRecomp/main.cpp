@@ -91,6 +91,9 @@ int main(int argc, char** argv)
         std::vector<std::unique_ptr<uint8_t[]>> files;
         std::map<XXH64_hash_t, RecompiledShader> shaders;
 
+        size_t foundPixel = 0;
+        size_t foundVertex = 0;
+
         std::vector<std::string> inputPaths;
         if (std::filesystem::is_directory(input))
         {
@@ -119,6 +122,11 @@ int main(int argc, char** argv)
                     shaderContainer->field1C == 0 &&
                     shaderContainer->field20 == 0)
                 {
+                    if ((shaderContainer->flags & 0xFF) == 0)
+                        ++foundPixel;
+                    else
+                        ++foundVertex;
+
                     XXH64_hash_t hash = XXH3_64bits(shaderContainer, dataSize);
                     auto shader = shaders.try_emplace(hash);
                     if (shader.second)
@@ -166,6 +174,8 @@ int main(int argc, char** argv)
                     ++dumped;
                 });
 
+            fmt::println("STATS found_pixel={} found_vertex={} found_total={} unique={} dumped={} failed={}",
+                foundPixel, foundVertex, foundPixel + foundVertex, shaders.size(), dumped.load(), failed.load());
             fmt::println("Dumped {} HLSL shaders to {} ({} failed to recompile).", dumped.load(), output, failed.load());
             return 0;
         }
