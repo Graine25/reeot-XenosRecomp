@@ -85,12 +85,15 @@ int main(int argc, char** argv)
     // the XXH3-64 lookup key used by the runtime shader cache, so the native renderer can map
     // a guest shader straight to its HLSL by hash.
     bool hlslDump = false;
+    bool dxilDump = false;
 #ifndef XENOS_RECOMP_INPUT
     if (argc >= 5 && std::string_view(argv[4]) == "--hlsl")
         hlslDump = true;
+    if (argc >= 5 && std::string_view(argv[4]) == "--dxil")
+        dxilDump = true;
 #endif
 
-    if (std::filesystem::is_directory(input) || hlslDump)
+    if (std::filesystem::is_directory(input) || hlslDump || dxilDump)
     {
         std::vector<std::unique_ptr<uint8_t[]>> files;
         std::map<XXH64_hash_t, RecompiledShader> shaders;
@@ -186,6 +189,60 @@ int main(int argc, char** argv)
             fmt::println("STATS found_pixel={} found_vertex={} found_total={} unique={} dumped={} failed={}",
                 foundPixel, foundVertex, foundPixel + foundVertex, shaders.size(), dumped.load(), failed.load());
             fmt::println("Dumped {} HLSL shaders to {} ({} failed to recompile).", dumped.load(), output, failed.load());
+            return 0;
+        }
+
+        if (dxilDump)
+        {
+            std::filesystem::create_directories(output);
+
+            std::atomic<uint32_t> dumped = 0;
+            std::atomic<uint32_t> failed = 0;
+            std::for_each(std::execution::par_unseq, shaders.begin(), shaders.end(), [&](auto& hashShaderPair)
+                {
+                    const XXH64_hash_t hash = hashShaderPair.first;
+
+                    thread_local ShaderRecompiler recompiler;
+                    recompiler = {};
+                    try
+                    {
+                        recompiler.recompile(hashShaderPair.second.data, include);
+                    }
+                    catch (...)
+                    {
+                        ++failed;
+                        return;
+                    }
+
+                    // Spec constants are normally a runtime DXIL-link (g_SpecConstants()
+                    // is left unimplemented). For the plain-DXIL path, bake them to 0
+                    // (default variant: alpha-test off, R11G11B10 off, ...) so the
+                    // spec-constant shaders compile standalone. TODO: real per-mask link.
+                    std::string src = recompiler.out;
+                    {
+                        const std::string decl = "uint g_SpecConstants();";
+                        size_t pos = src.find(decl);
+                        if (pos != std::string::npos)
+                            src.replace(pos, decl.size(), "uint g_SpecConstants() { return 0; }");
+                    }
+
+                    thread_local DxcCompiler dxcCompiler;
+                    IDxcBlob* dxil = dxcCompiler.compile(src, recompiler.isPixelShader, false, false);
+                    if (dxil == nullptr)
+                    {
+                        ++failed;
+                        return;
+                    }
+
+                    std::string fileName = fmt::format("{}/{:016x}.dxil", output, hash);
+                    writeAllBytes(fileName.c_str(), dxil->GetBufferPointer(), dxil->GetBufferSize());
+                    dxil->Release();
+                    ++dumped;
+                });
+
+            fmt::println("STATS found_total={} unique={} dumped={} failed={}",
+                foundPixel + foundVertex, shaders.size(), dumped.load(), failed.load());
+            fmt::println("Dumped {} DXIL shaders to {} ({} failed).", dumped.load(), output, failed.load());
             return 0;
         }
 
