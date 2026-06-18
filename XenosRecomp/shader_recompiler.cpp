@@ -130,11 +130,12 @@ static constexpr std::pair<DeclUsage, size_t> INTERPOLATORS[] =
     { DeclUsage::Color, 1 }
 };
 
-static constexpr std::string_view TEXTURE_DIMENSIONS[] = 
+static constexpr std::string_view TEXTURE_DIMENSIONS[] =
 {
     "2D",
-    "3D", 
-    "Cube" 
+    "3D",
+    "Cube",
+    "1D"
 };
 
 static FetchDestinationSwizzle getDestSwizzle(uint32_t dstSwizzle, uint32_t index)

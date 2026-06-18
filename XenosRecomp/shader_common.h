@@ -35,16 +35,17 @@ struct PushConstants
 // Reblue specific, most likely needs to be changed for reeot
 #ifdef REEOT_RECOMP
 // 256-bit boolean register file (BD bool addresses reach ~158), then per-usage 16-bit-pair swap masks.
-#define g_Booleans(i)              vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 256 + (i)*4)
-#define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 288)
-#define g_HalfPixelOffset          vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 292)
-#define g_AlphaThreshold           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 300)
-#define g_SwappedNormals           vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 304)
-#define g_SwappedBinormals         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 308)
-#define g_SwappedTangents          vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 312)
-#define g_SwappedBlendWeights      vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 316)
-#define g_SwappedPositions         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 320)
-#define g_SintTexcoords            vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 324)
+// Layout: 4 texture dims * 16 samplers * 4 bytes = 256, sampler indices 16*4 = 64 → shared at byte 320.
+#define g_Booleans(i)              vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 320 + (i)*4)
+#define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 352)
+#define g_HalfPixelOffset          vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 356)
+#define g_AlphaThreshold           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 364)
+#define g_SwappedNormals           vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 368)
+#define g_SwappedBinormals         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 372)
+#define g_SwappedTangents          vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 376)
+#define g_SwappedBlendWeights      vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 380)
+#define g_SwappedPositions         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 384)
+#define g_SintTexcoords            vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 388)
 #else
 #define g_Booleans                 vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 256)
 #define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 260)
@@ -61,16 +62,16 @@ struct PushConstants
 // Reblue specific, most likely needs to be changed for reeot
 #ifdef REEOT_RECOMP
 #define DEFINE_SHARED_CONSTANTS() \
-    uint4 g_BooleansArr[2] : packoffset(c16); \
-    uint g_SwappedTexcoords : packoffset(c18.x); \
-    float2 g_HalfPixelOffset : packoffset(c18.y); \
-    float g_AlphaThreshold : packoffset(c18.w); \
-    uint g_SwappedNormals : packoffset(c19.x); \
-    uint g_SwappedBinormals : packoffset(c19.y); \
-    uint g_SwappedTangents : packoffset(c19.z); \
-    uint g_SwappedBlendWeights : packoffset(c19.w); \
-    uint g_SwappedPositions : packoffset(c20.x); \
-    uint g_SintTexcoords : packoffset(c20.y);
+    uint4 g_BooleansArr[2] : packoffset(c20); \
+    uint g_SwappedTexcoords : packoffset(c22.x); \
+    float2 g_HalfPixelOffset : packoffset(c22.y); \
+    float g_AlphaThreshold : packoffset(c22.w); \
+    uint g_SwappedNormals : packoffset(c23.x); \
+    uint g_SwappedBinormals : packoffset(c23.y); \
+    uint g_SwappedTangents : packoffset(c23.z); \
+    uint g_SwappedBlendWeights : packoffset(c23.w); \
+    uint g_SwappedPositions : packoffset(c24.x); \
+    uint g_SintTexcoords : packoffset(c24.y);
 
 #define g_Booleans(i) (g_BooleansArr[(i) / 4][(i) % 4])
 #else
@@ -94,6 +95,7 @@ uint g_SpecConstants();
 Texture2D<float4> g_Texture2DDescriptorHeap[] : register(t0, space0);
 Texture3D<float4> g_Texture3DDescriptorHeap[] : register(t0, space1);
 TextureCube<float4> g_TextureCubeDescriptorHeap[] : register(t0, space2);
+Texture1D<float4> g_Texture1DDescriptorHeap[] : register(t0, space4);
 SamplerState g_SamplerDescriptorHeap[] : register(s0, space3);
 
 uint2 getTexture2DDimensions(Texture2D<float4> texture)
@@ -101,6 +103,11 @@ uint2 getTexture2DDimensions(Texture2D<float4> texture)
     uint2 dimensions;
     texture.GetDimensions(dimensions.x, dimensions.y);
     return dimensions;
+}
+
+float4 tfetch1D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float texCoord)
+{
+    return g_Texture1DDescriptorHeap[resourceDescriptorIndex].Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord);
 }
 
 float4 tfetch2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)

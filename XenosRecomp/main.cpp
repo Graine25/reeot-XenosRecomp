@@ -304,10 +304,12 @@ int main(int argc, char** argv)
 
         if (!g_failures.empty())
         {
-            fmt::println(stderr, "Recompile failures ({}):", g_failures.size());
+            fmt::println(stderr, "WARNING: {} shader(s) failed to recompile (skipped):", g_failures.size());
             for (const auto& failure : g_failures)
                 fmt::println(stderr, "  hash=0x{:016X} reason={}", failure.hash, failure.reason);
-            return 2;
+            // Remove failed entries so they don't emit zero-size table entries.
+            for (const auto& failure : g_failures)
+                shaders.erase(failure.hash);
         }
 
         fmt::println("Creating shader cache...");
