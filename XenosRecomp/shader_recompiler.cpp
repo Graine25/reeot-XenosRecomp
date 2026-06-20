@@ -127,7 +127,11 @@ static constexpr std::pair<DeclUsage, size_t> INTERPOLATORS[] =
     { DeclUsage::TexCoord, 14 },
     { DeclUsage::TexCoord, 15 },
     { DeclUsage::Color, 0 },
-    { DeclUsage::Color, 1 }
+    { DeclUsage::Color, 1 },
+    // Some shaders pass the normal down as a VS->PS interpolator; declare it so the
+    // generated o/iNormal references resolve (unused on shaders that don't write it).
+    { DeclUsage::Normal, 0 },
+    { DeclUsage::Normal, 1 }
 };
 
 static constexpr std::string_view TEXTURE_DIMENSIONS[] =
@@ -1510,6 +1514,10 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     }
 #endif
 
+    // Loop count registers (i0..i31) baked into the shader's definition table. Tracked so we
+    // can declare any loop register that a loop references but the table does not provide.
+    bool definedLoopRegisters[32]{};
+
     if (shaderContainer->definitionTableOffset != NULL)
     {
         auto definitionTable = reinterpret_cast<const DefinitionTable*>(shaderData + shaderContainer->definitionTableOffset);
@@ -1547,8 +1555,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
                 value = definition->values[i].get();
 
+                uint32_t loopRegisterIndex = (definition->registerIndex - 8992) / 4 + i;
                 println("\tint4 i{} = int4({}, {}, {}, {});",
-                    (definition->registerIndex - 8992) / 4 + i, x, y, z, w);
+                    loopRegisterIndex, x, y, z, w);
+                if (loopRegisterIndex < 32)
+                    definedLoopRegisters[loopRegisterIndex] = true;
             }
             definitions += 2;
             definitions += definition->count;
@@ -1653,6 +1664,9 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     uint32_t instrSize = shader->size;
     bool simpleControlFlow = true;
 
+    // Loop registers actually referenced by loop control flow (loopId is a 5-bit field, 0..31).
+    bool usedLoopRegisters[32]{};
+
     while (instrAddress < instrSize)
     {
         code0 = controlFlowCode[0];
@@ -1692,6 +1706,14 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
                 break;
             }
+
+            case ControlFlowOpcode::LoopStart:
+                usedLoopRegisters[cfInstr.loopStart.loopId] = true;
+                break;
+
+            case ControlFlowOpcode::LoopEnd:
+                usedLoopRegisters[cfInstr.loopEnd.loopId] = true;
+                break;
             }
 
             if (address != 0)
@@ -1700,6 +1722,16 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
         controlFlowCode += 3;
         instrAddress += 12;
+    }
+
+    // Some shaders drive a loop count from the dynamic Xenos loop-constant register file rather
+    // than baking it into the definition table. Declare any referenced-but-undefined loop
+    // register from the runtime loop constants so the body compiles; the zero-initialized
+    // backing means such a loop runs 0 times until the runtime uploads real loop constants.
+    for (uint32_t loopRegister = 0; loopRegister < 32; loopRegister++)
+    {
+        if (usedLoopRegisters[loopRegister] && !definedLoopRegisters[loopRegister])
+            println("\tint4 i{} = int4(g_LoopConstants({}));", loopRegister, loopRegister);
     }
 
     if (simpleControlFlow)

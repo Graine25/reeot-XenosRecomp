@@ -46,6 +46,10 @@ struct PushConstants
 #define g_SwappedBlendWeights      vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 380)
 #define g_SwappedPositions         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 384)
 #define g_SintTexcoords            vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 388)
+// Xenos dynamic loop-constant register file (i0..i31): int4(count, start, step, _) per loop.
+// Placed after the shared block (ends at 392) at byte 400 == c25. TODO(reeot runtime): upload
+// real loop constants here; zero-init makes undefined loops no-op.
+#define g_LoopConstants(i)         vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 400 + (i)*16)
 #else
 #define g_Booleans                 vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 256)
 #define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 260)
@@ -71,9 +75,13 @@ struct PushConstants
     uint g_SwappedTangents : packoffset(c23.z); \
     uint g_SwappedBlendWeights : packoffset(c23.w); \
     uint g_SwappedPositions : packoffset(c24.x); \
-    uint g_SintTexcoords : packoffset(c24.y);
+    uint g_SintTexcoords : packoffset(c24.y); \
+    uint4 g_LoopConstantsArr[32] : packoffset(c25);
 
 #define g_Booleans(i) (g_BooleansArr[(i) / 4][(i) % 4])
+// Xenos dynamic loop-constant register file (i0..i31): int4(count, start, step, _) per loop.
+// TODO(reeot runtime): upload real loop constants here; zero-init makes undefined loops no-op.
+#define g_LoopConstants(i) g_LoopConstantsArr[i]
 #else
 #define DEFINE_SHARED_CONSTANTS() \
     uint g_Booleans : packoffset(c16.x); \
