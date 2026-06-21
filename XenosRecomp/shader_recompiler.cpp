@@ -1390,7 +1390,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
     out += "#endif\n";
 
-    out += "void main(\n";
+    out += "void shaderMain(\n";
 
     if (isPixelShader)
     {
