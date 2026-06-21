@@ -1409,7 +1409,10 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
     out += "#endif\n";
 
-    out += "void main(\n";
+    // Entry point name "shaderMain" matches the upstream/Unleashed convention used
+    // by the DXC spec-constant linker. (Older reeot caches emitted "main"; the
+    // runtime loader auto-detects either name.)
+    out += "void shaderMain(\n";
 
     if (isPixelShader)
     {
