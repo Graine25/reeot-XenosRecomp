@@ -44,6 +44,7 @@ struct ShaderRecompiler : StringBuffer
     std::unordered_map<uint32_t, const char*> int4Constants;
     std::unordered_map<uint32_t, const char*> samplers;
     std::unordered_map<uint32_t, uint32_t> ifEndLabels;
+    std::unordered_set<uint32_t> elseLabels;
     uint32_t specConstantsMask = 0;
 
 #ifdef REEOT_RECOMP

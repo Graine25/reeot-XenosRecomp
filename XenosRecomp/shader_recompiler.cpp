@@ -1678,6 +1678,17 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
     bool usedLoopRegisters[32]{};
 
+    enum class CfKind : uint8_t { None, Cond, Uncond, LoopStart, LoopEnd };
+    struct CfSummary
+    {
+        CfKind kind = CfKind::None;
+        uint32_t target = 0;
+    };
+    std::vector<CfSummary> cfSummaries;
+    std::vector<uint32_t> loopStarts;
+    std::unordered_map<uint32_t, uint32_t> loopEndFor;
+    uint32_t cfIndex = 0;
+
     while (instrAddress < instrSize)
     {
         code0 = controlFlowCode[0];
@@ -1708,27 +1719,43 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                 address = cfInstr.condExecPred.address;
                 break;
 
-            case ControlFlowOpcode::CondJmp:
-            {
-                if (cfInstr.condJmp.isUnconditional || cfInstr.condJmp.direction)
-                    simpleControlFlow = false;
-                else
-                    ++ifEndLabels[cfInstr.condJmp.address];
-
-                break;
-            }
-
             case ControlFlowOpcode::LoopStart:
                 usedLoopRegisters[cfInstr.loopStart.loopId] = true;
+                loopStarts.push_back(cfIndex);
+                cfSummaries.push_back({ CfKind::LoopStart, 0 });
                 break;
 
             case ControlFlowOpcode::LoopEnd:
                 usedLoopRegisters[cfInstr.loopEnd.loopId] = true;
+                if (loopStarts.empty())
+                    simpleControlFlow = false;
+                else
+                {
+                    loopEndFor[loopStarts.back()] = cfIndex;
+                    loopStarts.pop_back();
+                }
+                cfSummaries.push_back({ CfKind::LoopEnd, 0 });
+                break;
+
+            case ControlFlowOpcode::CondJmp:
+            {
+                if (cfInstr.condJmp.direction || cfInstr.condJmp.address <= cfIndex)
+                    simpleControlFlow = false;
+
+                cfSummaries.push_back({
+                    cfInstr.condJmp.isUnconditional ? CfKind::Uncond : CfKind::Cond,
+                    uint32_t(cfInstr.condJmp.address) });
                 break;
             }
+            }
+
+            if (cfSummaries.size() == cfIndex)
+                cfSummaries.push_back({});
 
             if (address != 0)
                 instrSize = std::min<uint32_t>(instrSize, address * 12);
+
+            ++cfIndex;
         }
 
         controlFlowCode += 3;
@@ -1745,6 +1772,112 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             else
                 println("\tint4 i{} = int4(g_LoopConstants({}));", loopRegister, loopRegister);
         }
+    }
+
+    if (!loopStarts.empty())
+        simpleControlFlow = false;
+
+    if (simpleControlFlow)
+    {
+        const uint32_t instrCount = (instrSize / 12) * 2;
+        if (cfSummaries.size() > instrCount)
+            cfSummaries.resize(instrCount);
+
+        std::function<bool(uint32_t, uint32_t, uint32_t)> structure =
+            [&](uint32_t lo, uint32_t hi, uint32_t cont) -> bool
+        {
+            uint32_t i = lo;
+            while (i < hi)
+            {
+                const CfSummary& summary = cfSummaries[i];
+                switch (summary.kind)
+                {
+                case CfKind::Uncond:
+                {
+                    if (i + 1 == hi && (summary.target == cont || summary.target == hi))
+                        i = hi;
+                    else
+                        return false;
+                    break;
+                }
+                case CfKind::Cond:
+                {
+                    const uint32_t t = summary.target;
+                    if (t > hi)
+                    {
+                        if (t != cont)
+                            return false;
+                        ++ifEndLabels[hi];
+                        if (!structure(i + 1, hi, cont))
+                            return false;
+                        i = hi;
+                    }
+                    else if (t < hi && t - 1 > i && cfSummaries[t - 1].kind == CfKind::Uncond &&
+                             cfSummaries[t - 1].target != t)
+                    {
+                        const uint32_t merge = cfSummaries[t - 1].target;
+                        if (merge == cont || merge == hi)
+                        {
+                            elseLabels.insert(t);
+                            ++ifEndLabels[hi];
+                            if (!structure(i + 1, t - 1, merge == cont ? cont : hi))
+                                return false;
+                            if (!structure(t, hi, cont))
+                                return false;
+                            i = hi;
+                        }
+                        else if (merge < hi)
+                        {
+                            elseLabels.insert(t);
+                            ++ifEndLabels[merge];
+                            if (!structure(i + 1, t - 1, merge))
+                                return false;
+                            if (!structure(t, merge, merge))
+                                return false;
+                            i = merge;
+                        }
+                        else
+                        {
+                            return false;
+                        }
+                    }
+                    else
+                    {
+                        ++ifEndLabels[t];
+                        if (!structure(i + 1, t, t == hi ? cont : t))
+                            return false;
+                        i = t;
+                    }
+                    break;
+                }
+                case CfKind::LoopStart:
+                {
+                    auto loopEnd = loopEndFor.find(i);
+                    if (loopEnd == loopEndFor.end() || loopEnd->second >= hi)
+                        return false;
+                    if (!structure(i + 1, loopEnd->second, loopEnd->second))
+                        return false;
+                    i = loopEnd->second + 1;
+                    break;
+                }
+                case CfKind::LoopEnd:
+                    return false;
+
+                default:
+                    ++i;
+                    break;
+                }
+            }
+            return true;
+        };
+
+        simpleControlFlow = structure(0, instrCount, instrCount);
+    }
+
+    if (!simpleControlFlow)
+    {
+        ifEndLabels.clear();
+        elseLabels.clear();
     }
 
     if (simpleControlFlow)
@@ -1790,6 +1923,17 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                         indent();
                         out += "}\n";
                     }
+                }
+                if (elseLabels.count(pc) != 0)
+                {
+                    --indentation;
+                    indent();
+                    out += "}\n";
+                    indent();
+                    out += "else\n";
+                    indent();
+                    out += "{\n";
+                    ++indentation;
                 }
             }
 
@@ -1886,9 +2030,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             {
                 if (cfInstr.condJmp.isUnconditional)
                 {
-                    assert(!simpleControlFlow);
-                    println("\t\t\tpc = {};", uint32_t(cfInstr.condJmp.address));
-                    out += "\t\t\tcontinue;\n";
+                    if (!simpleControlFlow)
+                    {
+                        println("\t\t\tpc = {};", uint32_t(cfInstr.condJmp.address));
+                        out += "\t\t\tcontinue;\n";
+                    }
                 }
                 else
                 {
@@ -2088,6 +2234,19 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         out += "\t\t}\n";
         out += "\t\tbreak;\n";
         out += "\t}\n";
+    }
+    else
+    {
+        auto findResult = ifEndLabels.find(pc);
+        if (findResult != ifEndLabels.end())
+        {
+            for (uint32_t i = 0; i < findResult->second; i++)
+            {
+                --indentation;
+                indent();
+                out += "}\n";
+            }
+        }
     }
 
 #ifdef UNLEASHED_RECOMP
