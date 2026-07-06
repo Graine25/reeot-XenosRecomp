@@ -35,6 +35,11 @@ IDxcBlob* DxcCompiler::compile(const std::string& shaderSource, bool compilePixe
     }
 
     args[argCount++] = target;
+    // The recompiler emits `void shaderMain(...)` (entry renamed in c22e2c5);
+    // DXC defaults to `main`, so name the entry explicitly for non-library
+    // targets (lib_6_3 exports every function and takes no entry).
+    if (!compileLibrary)
+        args[argCount++] = L"-E shaderMain";
     args[argCount++] = L"-HV 2021";
     args[argCount++] = L"-all-resources-bound";
 

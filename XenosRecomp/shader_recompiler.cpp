@@ -198,6 +198,28 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
 
 // Reblue specific, most likely needs to be changed for reeot
 #ifdef REEOT_RECOMP
+    // Record where this element's vfetch instruction lives so the runtime can
+    // decode its (runtime-patched) fields from guest memory. Mini-fetches
+    // inherit the previous full fetch's constant slot and stride, so record the
+    // parent full fetch's address alongside.
+    {
+        const uint32_t parent = instr.isMiniFetch ? lastFullVfetchAddress : address;
+        if (!instr.isMiniFetch)
+            lastFullVfetchAddress = address;
+        const VertexElement& ve = findResult->second;
+        const uint32_t usageKey = uint32_t(ve.usage) | (uint32_t(ve.usageIndex) << 4);
+        bool seen = false;
+        for (const VertexFetchLayoutRecord& r : vertexLayout)
+            seen |= (r.w0 & 0xFF) == usageKey;
+        if (!seen)
+        {
+            VertexFetchLayoutRecord rec;
+            rec.w0 = usageKey | (uint32_t(instr.isMiniFetch) << 8);
+            rec.w1 = (address & 0xFFFF) | ((parent & 0xFFFF) << 16);
+            vertexLayout.push_back(rec);
+        }
+    }
+
     // Wrap each 16-bit-packed semantic in swapFloats() (per-usage mask); TEXCOORD also runs sintTexcoord() for raw-int bindings.
     switch (findResult->second.usage)
     {
@@ -1271,6 +1293,16 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             break;
         }
 
+        case RegisterSet::Int4:
+        {
+// Reblue specific, most likely needs to be changed for reeot
+#ifdef REEOT_RECOMP
+            const uint32_t loopRegister = uint32_t(constantInfo->registerIndex) + (isPixelShader ? 16u : 0u);
+            int4Constants.emplace(loopRegister, constantName);
+#endif
+            break;
+        }
+
         }
     }
 
@@ -1305,6 +1337,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         {
 // Reblue specific, most likely needs to be changed for reeot
 #ifdef REEOT_RECOMP
+            usesFloatConstants = true;
             // Only the alias winner gets a packoffset slot; a loser would overlap it in the cbuffer and fail DXC.
             auto winner = float4Constants.find(constantInfo->registerIndex);
             if (winner == float4Constants.end() || winner->second != constantInfo)
@@ -1395,6 +1428,12 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 #endif
         }
     }
+
+// Reblue specific, most likely needs to be changed for reeot
+#ifdef REEOT_RECOMP
+    for (auto& [registerIndex, constantName] : int4Constants)
+        println("\t#define {} int4(g_LoopConstants({}))", constantName, registerIndex);
+#endif
 
     out += '\n';
 
@@ -1650,6 +1689,13 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
     const be<uint32_t>* code = reinterpret_cast<const be<uint32_t>*>(shaderData + shaderContainer->virtualSize + shader->physicalOffset);
 
+// Reblue specific, most likely needs to be changed for reeot
+#ifdef REEOT_RECOMP
+    // Instruction base within the physical microcode part (the runtime reads the
+    // patched vfetch instructions from the shader object's microcode buffer).
+    physicalCodeOffset = shader->physicalOffset;
+#endif
+
     union
     {
         ControlFlowInstruction controlFlow[2];
@@ -1669,6 +1715,18 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
     // Loop registers actually referenced by loop control flow (loopId is a 5-bit field, 0..31).
     bool usedLoopRegisters[32]{};
+
+    // Per-instruction control flow summary for the structurizer below.
+    enum class CfKind : uint8_t { None, Cond, Uncond, LoopStart, LoopEnd };
+    struct CfSummary
+    {
+        CfKind kind = CfKind::None;
+        uint32_t target = 0;
+    };
+    std::vector<CfSummary> cfSummaries;
+    std::vector<uint32_t> loopStarts;
+    std::unordered_map<uint32_t, uint32_t> loopEndFor;
+    uint32_t cfIndex = 0;
 
     while (instrAddress < instrSize)
     {
@@ -1700,27 +1758,43 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                 address = cfInstr.condExecPred.address;
                 break;
 
-            case ControlFlowOpcode::CondJmp:
-            {
-                if (cfInstr.condJmp.isUnconditional || cfInstr.condJmp.direction)
-                    simpleControlFlow = false;
-                else
-                    ++ifEndLabels[cfInstr.condJmp.address];
-
-                break;
-            }
-
             case ControlFlowOpcode::LoopStart:
                 usedLoopRegisters[cfInstr.loopStart.loopId] = true;
+                loopStarts.push_back(cfIndex);
+                cfSummaries.push_back({ CfKind::LoopStart, 0 });
                 break;
 
             case ControlFlowOpcode::LoopEnd:
                 usedLoopRegisters[cfInstr.loopEnd.loopId] = true;
+                if (loopStarts.empty())
+                    simpleControlFlow = false;
+                else
+                {
+                    loopEndFor[loopStarts.back()] = cfIndex;
+                    loopStarts.pop_back();
+                }
+                cfSummaries.push_back({ CfKind::LoopEnd, 0 });
+                break;
+
+            case ControlFlowOpcode::CondJmp:
+            {
+                if (cfInstr.condJmp.direction || cfInstr.condJmp.address <= cfIndex)
+                    simpleControlFlow = false;
+
+                cfSummaries.push_back({
+                    cfInstr.condJmp.isUnconditional ? CfKind::Uncond : CfKind::Cond,
+                    uint32_t(cfInstr.condJmp.address) });
                 break;
             }
+            }
+
+            if (cfSummaries.size() == cfIndex)
+                cfSummaries.push_back({});
 
             if (address != 0)
                 instrSize = std::min<uint32_t>(instrSize, address * 12);
+
+            ++cfIndex;
         }
 
         controlFlowCode += 3;
@@ -1734,7 +1808,133 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     for (uint32_t loopRegister = 0; loopRegister < 32; loopRegister++)
     {
         if (usedLoopRegisters[loopRegister] && !definedLoopRegisters[loopRegister])
-            println("\tint4 i{} = int4(g_LoopConstants({}));", loopRegister, loopRegister);
+        {
+            auto namedLoopConstant = int4Constants.find(loopRegister);
+            if (namedLoopConstant != int4Constants.end())
+                println("\tint4 i{} = {};", loopRegister, namedLoopConstant->second);
+            else
+                println("\tint4 i{} = int4(g_LoopConstants({}));", loopRegister, loopRegister);
+        }
+    }
+
+    if (!loopStarts.empty())
+        simpleControlFlow = false;
+
+    if (simpleControlFlow)
+    {
+        // Recursive-descent structurizer. Xenos control flow in practice is
+        // structured code lowered to forward jumps: "cjmp c, ELSE; then;
+        // jmp MERGE; ELSE: else" diamonds where the compiler may retarget the
+        // then-exit jump at an ENCLOSING merge point (jump chaining), plus
+        // LoopStart/LoopEnd pairs. structure() walks a region [lo, hi) with
+        // the continuation index "cont" (where control flows after hi): a
+        // trailing unconditional jump to the continuation is a no-op after
+        // structuring, a conditional jump opens an if (with an else branch
+        // when the instruction before its target is an unconditional jump to
+        // a legal merge point). Any other shape rejects the shader back to
+        // the switch(pc) state machine.
+        const uint32_t instrCount = (instrSize / 12) * 2;
+        if (cfSummaries.size() > instrCount)
+            cfSummaries.resize(instrCount);
+
+        std::function<bool(uint32_t, uint32_t, uint32_t)> structure =
+            [&](uint32_t lo, uint32_t hi, uint32_t cont) -> bool
+        {
+            uint32_t i = lo;
+            while (i < hi)
+            {
+                const CfSummary& summary = cfSummaries[i];
+                switch (summary.kind)
+                {
+                case CfKind::Uncond:
+                {
+                    if (i + 1 == hi && (summary.target == cont || summary.target == hi))
+                        i = hi;
+                    else
+                        return false;
+                    break;
+                }
+                case CfKind::Cond:
+                {
+                    const uint32_t t = summary.target;
+                    if (t > hi)
+                    {
+                        if (t != cont)
+                            return false;
+                        ++ifEndLabels[hi];
+                        if (!structure(i + 1, hi, cont))
+                            return false;
+                        i = hi;
+                    }
+                    // A then-exit jump targeting the cond target itself is a
+                    // no-op (empty else); fall through to the plain-if path,
+                    // whose trailing-jump rule deletes it.
+                    else if (t < hi && t - 1 > i && cfSummaries[t - 1].kind == CfKind::Uncond &&
+                             cfSummaries[t - 1].target != t)
+                    {
+                        const uint32_t merge = cfSummaries[t - 1].target;
+                        if (merge == cont || merge == hi)
+                        {
+                            elseLabels.insert(t);
+                            ++ifEndLabels[hi];
+                            if (!structure(i + 1, t - 1, merge == cont ? cont : hi))
+                                return false;
+                            if (!structure(t, hi, cont))
+                                return false;
+                            i = hi;
+                        }
+                        else if (merge < hi)
+                        {
+                            elseLabels.insert(t);
+                            ++ifEndLabels[merge];
+                            if (!structure(i + 1, t - 1, merge))
+                                return false;
+                            if (!structure(t, merge, merge))
+                                return false;
+                            i = merge;
+                        }
+                        else
+                        {
+                            return false;
+                        }
+                    }
+                    else
+                    {
+                        ++ifEndLabels[t];
+                        if (!structure(i + 1, t, t == hi ? cont : t))
+                            return false;
+                        i = t;
+                    }
+                    break;
+                }
+                case CfKind::LoopStart:
+                {
+                    auto loopEnd = loopEndFor.find(i);
+                    if (loopEnd == loopEndFor.end() || loopEnd->second >= hi)
+                        return false;
+                    if (!structure(i + 1, loopEnd->second, loopEnd->second))
+                        return false;
+                    i = loopEnd->second + 1;
+                    break;
+                }
+                case CfKind::LoopEnd:
+                    return false; // reached without its LoopStart
+
+                default:
+                    ++i;
+                    break;
+                }
+            }
+            return true;
+        };
+
+        simpleControlFlow = structure(0, instrCount, instrCount);
+    }
+
+    if (!simpleControlFlow)
+    {
+        ifEndLabels.clear();
+        elseLabels.clear();
     }
 
     if (simpleControlFlow)
@@ -1780,6 +1980,19 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                         indent();
                         out += "}\n";
                     }
+                }
+                // Inner regions close first (validated nesting), then the
+                // enclosing if's then-branch flips to its else-branch.
+                if (elseLabels.count(pc) != 0)
+                {
+                    --indentation;
+                    indent();
+                    out += "}\n";
+                    indent();
+                    out += "else\n";
+                    indent();
+                    out += "{\n";
+                    ++indentation;
                 }
             }
 
@@ -1878,9 +2091,13 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             {
                 if (cfInstr.condJmp.isUnconditional)
                 {
-                    assert(!simpleControlFlow);
-                    println("\t\t\tpc = {};", uint32_t(cfInstr.condJmp.address));
-                    out += "\t\t\tcontinue;\n";
+                    // Structured mode: the then-branch exit jump was consumed by
+                    // the "} else {" emitted at the next instruction.
+                    if (!simpleControlFlow)
+                    {
+                        println("\t\t\tpc = {};", uint32_t(cfInstr.condJmp.address));
+                        out += "\t\t\tcontinue;\n";
+                    }
                 }
                 else
                 {
@@ -2082,6 +2299,21 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         out += "\t\t}\n";
         out += "\t\tbreak;\n";
         out += "\t}\n";
+    }
+    else
+    {
+        // Regions closing one past the last instruction never get visited by
+        // the loop above; balance their braces here.
+        auto findResult = ifEndLabels.find(pc);
+        if (findResult != ifEndLabels.end())
+        {
+            for (uint32_t i = 0; i < findResult->second; i++)
+            {
+                --indentation;
+                indent();
+                out += "}\n";
+            }
+        }
     }
 
 #ifdef UNLEASHED_RECOMP

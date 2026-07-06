@@ -30,6 +30,12 @@ struct RecompiledShader
     IDxcBlob* dxil = nullptr;
     std::vector<uint8_t> spirv;
     uint32_t specConstantsMask = 0;
+// Reblue specific, most likely needs to be changed for reeot
+#ifdef REEOT_RECOMP
+    std::vector<VertexFetchLayoutRecord> vertexLayout;  // empty for pixel shaders
+    uint32_t vfetchCodeOffset = 0;                      // instruction base in the physical part
+    uint32_t usesFloatConstants = 0;                    // 0 = window-space VS (no WVP constants)
+#endif
 };
 
 // Per-shader recompile failures, collected from the parallel loop and reported before exit.
@@ -264,6 +270,12 @@ int main(int argc, char** argv)
                 recompiler.recompile(shader.data, include);
 
                 shader.specConstantsMask = recompiler.specConstantsMask;
+// Reblue specific, most likely needs to be changed for reeot
+#ifdef REEOT_RECOMP
+                shader.vertexLayout = recompiler.vertexLayout;
+                shader.vfetchCodeOffset = recompiler.physicalCodeOffset;
+                shader.usesFloatConstants = recompiler.usesFloatConstants ? 1 : 0;
+#endif
 
                 thread_local DxcCompiler dxcCompiler;
 
@@ -320,22 +332,49 @@ int main(int argc, char** argv)
 
         std::vector<uint8_t> dxil;
         std::vector<uint8_t> spirv;
+// Reblue specific, most likely needs to be changed for reeot
+#ifdef REEOT_RECOMP
+        std::vector<uint32_t> vertexLayouts;  // flattened (w0, w1) records
+#endif
 
         for (auto& [hash, shader] : shaders)
         {
+// Reblue specific, most likely needs to be changed for reeot
+#ifdef REEOT_RECOMP
+            f.println("\t{{ 0x{:X}, {}, {}, {}, {}, {}, {}, {}, {}, {} }},",
+                hash, dxil.size(), (shader.dxil != nullptr) ? shader.dxil->GetBufferSize() : 0, spirv.size(), shader.spirv.size(), shader.specConstantsMask,
+                vertexLayouts.size(), shader.vertexLayout.size(), shader.vfetchCodeOffset,
+                shader.usesFloatConstants);
+            for (const VertexFetchLayoutRecord& r : shader.vertexLayout)
+            {
+                vertexLayouts.push_back(r.w0);
+                vertexLayouts.push_back(r.w1);
+            }
+#else
             f.println("\t{{ 0x{:X}, {}, {}, {}, {}, {} }},",
                 hash, dxil.size(), (shader.dxil != nullptr) ? shader.dxil->GetBufferSize() : 0, spirv.size(), shader.spirv.size(), shader.specConstantsMask);
+#endif
 
             if (shader.dxil != nullptr)
             {
                 dxil.insert(dxil.end(), reinterpret_cast<uint8_t *>(shader.dxil->GetBufferPointer()),
                     reinterpret_cast<uint8_t *>(shader.dxil->GetBufferPointer()) + shader.dxil->GetBufferSize());
             }
-            
+
             spirv.insert(spirv.end(), shader.spirv.begin(), shader.spirv.end());
         }
 
         f.println("}};");
+
+// Reblue specific, most likely needs to be changed for reeot
+#ifdef REEOT_RECOMP
+        f.print("const uint32_t g_shaderVertexLayouts[] = {{");
+        for (uint32_t v : vertexLayouts)
+            f.print("0x{:X},", v);
+        if (vertexLayouts.empty())
+            f.print("0");
+        f.println("}};");
+#endif
 
         fmt::println("Compressing DXIL cache...");
 
