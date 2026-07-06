@@ -192,6 +192,24 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
     assert(findResult != vertexElements.end());
 
 #ifdef REEOT_RECOMP
+    {
+        const uint32_t parent = instr.isMiniFetch ? lastFullVfetchAddress : address;
+        if (!instr.isMiniFetch)
+            lastFullVfetchAddress = address;
+        const VertexElement& ve = findResult->second;
+        const uint32_t usageKey = uint32_t(ve.usage) | (uint32_t(ve.usageIndex) << 4);
+        bool seen = false;
+        for (const VertexFetchLayoutRecord& r : vertexLayout)
+            seen |= (r.w0 & 0xFF) == usageKey;
+        if (!seen)
+        {
+            VertexFetchLayoutRecord rec;
+            rec.w0 = usageKey | (uint32_t(instr.isMiniFetch) << 8);
+            rec.w1 = (address & 0xFFFF) | ((parent & 0xFFFF) << 16);
+            vertexLayout.push_back(rec);
+        }
+    }
+
     switch (findResult->second.usage)
     {
     case DeclUsage::Normal:
@@ -1291,6 +1309,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         if (constantInfo->registerSet == RegisterSet::Float4)
         {
 #ifdef REEOT_RECOMP
+            usesFloatConstants = true;
             auto winner = float4Constants.find(constantInfo->registerIndex);
             if (winner == float4Constants.end() || winner->second != constantInfo)
                 continue;
@@ -1621,6 +1640,10 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     }
 
     const be<uint32_t>* code = reinterpret_cast<const be<uint32_t>*>(shaderData + shaderContainer->virtualSize + shader->physicalOffset);
+
+#ifdef REEOT_RECOMP
+    physicalCodeOffset = shader->physicalOffset;
+#endif
 
     union
     {

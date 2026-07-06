@@ -21,6 +21,17 @@ struct StringBuffer
     }
 };
 
+#ifdef REEOT_RECOMP
+//   w0: usage:4 | usageIndex:4 | isMiniFetch:1
+//   w1: instrAddress:16 | parentFullFetchAddress:16  (96-bit instruction units,
+//       relative to the physical code start = ShaderCacheEntry.vfetch_code_offset)
+struct VertexFetchLayoutRecord
+{
+    uint32_t w0;
+    uint32_t w1;
+};
+#endif
+
 struct ShaderRecompiler : StringBuffer
 {
     uint32_t indentation = 0;
@@ -33,6 +44,13 @@ struct ShaderRecompiler : StringBuffer
     std::unordered_map<uint32_t, const char*> samplers;
     std::unordered_map<uint32_t, uint32_t> ifEndLabels;
     uint32_t specConstantsMask = 0;
+
+#ifdef REEOT_RECOMP
+    std::vector<VertexFetchLayoutRecord> vertexLayout;
+    uint32_t lastFullVfetchAddress = 0;
+    uint32_t physicalCodeOffset = 0;
+    bool usesFloatConstants = false;
+#endif
 
 #ifdef UNLEASHED_RECOMP
     bool hasMtxProjection = false;

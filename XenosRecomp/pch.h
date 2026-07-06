@@ -6,6 +6,7 @@
 
 #include <dxcapi.h>
 
+#include <algorithm>
 #include <bit>
 #include <cassert>
 #include <cstdint>
@@ -16,6 +17,7 @@
 #include <fmt/core.h>
 #include <string>
 #include <unordered_map>
+#include <vector>
 #include <xxhash.h>
 #include <zstd.h>
 
