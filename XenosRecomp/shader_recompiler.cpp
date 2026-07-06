@@ -1278,6 +1278,15 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             break;
         }
 
+        case RegisterSet::Int4:
+        {
+#ifdef REEOT_RECOMP
+            const uint32_t loopRegister = uint32_t(constantInfo->registerIndex) + (isPixelShader ? 16u : 0u);
+            int4Constants.emplace(loopRegister, constantName);
+#endif
+            break;
+        }
+
         }
     }
 
@@ -1395,6 +1404,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 #endif
         }
     }
+
+#ifdef REEOT_RECOMP
+    for (auto& [registerIndex, constantName] : int4Constants)
+        println("\t#define {} int4(g_LoopConstants({}))", constantName, registerIndex);
+#endif
 
     out += '\n';
 
@@ -1724,7 +1738,13 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     for (uint32_t loopRegister = 0; loopRegister < 32; loopRegister++)
     {
         if (usedLoopRegisters[loopRegister] && !definedLoopRegisters[loopRegister])
-            println("\tint4 i{} = int4(g_LoopConstants({}));", loopRegister, loopRegister);
+        {
+            auto namedLoopConstant = int4Constants.find(loopRegister);
+            if (namedLoopConstant != int4Constants.end())
+                println("\tint4 i{} = {};", loopRegister, namedLoopConstant->second);
+            else
+                println("\tint4 i{} = int4(g_LoopConstants({}));", loopRegister, loopRegister);
+        }
     }
 
     if (simpleControlFlow)
