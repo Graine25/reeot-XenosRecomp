@@ -35,6 +35,8 @@ IDxcBlob* DxcCompiler::compile(const std::string& shaderSource, bool compilePixe
     }
 
     args[argCount++] = target;
+    if (!compileLibrary)
+        args[argCount++] = L"-E shaderMain";
     args[argCount++] = L"-HV 2021";
     args[argCount++] = L"-all-resources-bound";
 
