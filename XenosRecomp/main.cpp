@@ -2,7 +2,13 @@
 #include "shader_recompiler.h"
 #include "dxc_compiler.h"
 
+#ifdef XENOS_RECOMP_AIR
+#include "air_compiler.h"
+#endif
+
+#include <deque>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 static std::unique_ptr<uint8_t[]> readAllBytes(const char* filePath, size_t& fileSize)
@@ -29,6 +35,7 @@ struct RecompiledShader
     uint8_t* data = nullptr;
     IDxcBlob* dxil = nullptr;
     std::vector<uint8_t> spirv;
+    std::vector<uint8_t> air;
     uint32_t specConstantsMask = 0;
     std::string sourceName;
 };
@@ -42,6 +49,31 @@ struct ShaderFailure
 
 static std::mutex g_failureMutex;
 static std::vector<ShaderFailure> g_failures;
+
+#ifdef XENOS_RECOMP_AIR
+// placeholder atm: the recompiler has no `__air__` branch yet, so 
+// recompiler.out would fail for every shader. A trivial shader of the right 
+// stage still exercises the rest of the AIR path. 
+// Pass recompiler.out once that branch exists.
+static std::string placeholderMetalSource(bool isPixelShader)
+{
+    if (isPixelShader)
+    {
+        return "#include <metal_stdlib>\n"
+               "using namespace metal;\n"
+               "[[fragment]] float4 shaderMain() { return float4(0.0, 0.0, 0.0, 1.0); }\n";
+    }
+
+    return "#include <metal_stdlib>\n"
+           "using namespace metal;\n"
+           "struct Varyings { float4 position [[position]]; };\n"
+           "[[vertex]] Varyings shaderMain() {\n"
+           "    Varyings out{};\n"
+           "    out.position = float4(0.0, 0.0, 0.0, 1.0);\n"
+           "    return out;\n"
+           "}\n";
+}
+#endif
 
 int main(int argc, char** argv)
 {
@@ -144,15 +176,39 @@ int main(int argc, char** argv)
 
         std::atomic<uint32_t> progress = 0;
 
-        std::for_each(std::execution::par_unseq, shaders.begin(), shaders.end(), [&](auto& hashShaderPair)
-            {
-                auto& shader = hashShaderPair.second;
-                const XXH64_hash_t hash = hashShaderPair.first;
+        // A thread pool, not par_unseq: the AIR leg spawns child processes, which
+        // par_unseq does not allow. Queued entry pointers stay valid because
+        // std::map nodes are address-stable.
+        using ShaderEntry = decltype(shaders)::value_type;
 
-                auto recordFailure = [hash](const char* reason)
+        std::mutex shaderQueueMutex;
+        std::deque<ShaderEntry*> shaderQueue;
+        for (auto& entry : shaders)
+            shaderQueue.push_back(&entry);
+
+        const uint32_t numThreads = std::max(std::thread::hardware_concurrency(), 1u);
+        fmt::println("Recompiling {} shaders with {} threads", shaders.size(), numThreads);
+
+        auto worker = [&]
+        {
+            for (;;)
+            {
+                ShaderEntry* entry = nullptr;
+                {
+                    std::lock_guard<std::mutex> lock(shaderQueueMutex);
+                    if (shaderQueue.empty())
+                        return;
+                    entry = shaderQueue.front();
+                    shaderQueue.pop_front();
+                }
+
+                const XXH64_hash_t hash = entry->first;
+                auto& shader = entry->second;
+
+                auto recordFailure = [hash](std::string reason)
                 {
                     std::lock_guard<std::mutex> lock(g_failureMutex);
-                    g_failures.push_back({hash, reason});
+                    g_failures.push_back({hash, std::move(reason)});
                 };
 
                 thread_local ShaderRecompiler recompiler;
@@ -184,12 +240,25 @@ int main(int argc, char** argv)
                 if (shader.dxil == nullptr)
                 {
                     recordFailure("dxc-dxil-compile-failed");
-                    return;
+                    continue;
                 }
                 if (*(reinterpret_cast<uint32_t*>(shader.dxil->GetBufferPointer()) + 1) == 0)
                 {
                     recordFailure("dxil-not-signed");
-                    return;
+                    continue;
+                }
+#endif
+
+#ifdef XENOS_RECOMP_AIR
+                {
+                    std::string airError;
+                    shader.air = AirCompiler::compile(
+                        placeholderMetalSource(recompiler.isPixelShader), airError);
+                    if (shader.air.empty())
+                    {
+                        recordFailure(std::move(airError));
+                        continue;
+                    }
                 }
 #endif
 
@@ -197,14 +266,14 @@ int main(int argc, char** argv)
                 if (spirv == nullptr)
                 {
                     recordFailure("dxc-spirv-compile-failed");
-                    return;
+                    continue;
                 }
 
                 if (!smolv::Encode(spirv->GetBufferPointer(), spirv->GetBufferSize(), shader.spirv, smolv::kEncodeFlagStripDebugInfo))
                 {
                     spirv->Release();
                     recordFailure("smolv-encode-failed");
-                    return;
+                    continue;
                 }
 
                 spirv->Release();
@@ -212,7 +281,15 @@ int main(int argc, char** argv)
                 size_t currentProgress = ++progress;
                 if ((currentProgress % 10) == 0 || (currentProgress == shaders.size() - 1))
                     fmt::println("Recompiling shaders... {}%", currentProgress / float(shaders.size()) * 100.0f);
-            });
+            }
+        };
+
+        std::vector<std::thread> threads;
+        threads.reserve(numThreads);
+        for (uint32_t i = 0; i < numThreads; i++)
+            threads.emplace_back(worker);
+        for (auto& thread : threads)
+            thread.join();
 
         if (!g_failures.empty())
         {
@@ -234,22 +311,44 @@ int main(int argc, char** argv)
 
         std::vector<uint8_t> dxil;
         std::vector<uint8_t> spirv;
+        std::vector<uint8_t> air;
 
         for (auto& [hash, shader] : shaders)
         {
+            // Field order must track ShaderCacheEntry exactly; the fields are all
+            // uint32_t, so a mismatch shifts every value instead of failing.
+#ifdef XENOS_RECOMP_AIR
+            f.println("\t{{ 0x{:X}, {}, {}, {}, {}, {}, {}, {} }},",
+                hash, dxil.size(), (shader.dxil != nullptr) ? shader.dxil->GetBufferSize() : 0,
+                spirv.size(), shader.spirv.size(), air.size(), shader.air.size(), shader.specConstantsMask);
+#else
             f.println("\t{{ 0x{:X}, {}, {}, {}, {}, {} }},",
                 hash, dxil.size(), (shader.dxil != nullptr) ? shader.dxil->GetBufferSize() : 0, spirv.size(), shader.spirv.size(), shader.specConstantsMask);
+#endif
 
             if (shader.dxil != nullptr)
             {
                 dxil.insert(dxil.end(), reinterpret_cast<uint8_t *>(shader.dxil->GetBufferPointer()),
                     reinterpret_cast<uint8_t *>(shader.dxil->GetBufferPointer()) + shader.dxil->GetBufferSize());
             }
-            
+
+            air.insert(air.end(), shader.air.begin(), shader.air.end());
+
             spirv.insert(spirv.end(), shader.spirv.begin(), shader.spirv.end());
         }
 
         f.println("}};");
+
+        // Catches an emitter/header guard mismatch. Anchored on the last uint32_t
+        // field so struct padding does not affect it.
+        f.println("static_assert(offsetof(ShaderCacheEntry, specConstantsMask) == sizeof(uint64_t) + {} * sizeof(uint32_t),",
+#ifdef XENOS_RECOMP_AIR
+            6
+#else
+            4
+#endif
+        );
+        f.println("    \"ShaderCacheEntry layout disagrees with the emitted shader cache\");");
 
         fmt::println("Compressing DXIL cache...");
 
@@ -267,6 +366,24 @@ int main(int argc, char** argv)
         f.println("}};");
         f.println("const size_t g_dxilCacheCompressedSize = {};", dxilCompressed.size());
         f.println("const size_t g_dxilCacheDecompressedSize = {};", dxil.size());
+#endif
+
+#ifdef XENOS_RECOMP_AIR
+        fmt::println("Compressing AIR cache...");
+
+        std::vector<uint8_t> airCompressed(ZSTD_compressBound(air.size()));
+        airCompressed.resize(ZSTD_compress(airCompressed.data(), airCompressed.size(), air.data(), air.size(), level));
+
+        f.print("const uint8_t g_compressedAirCache[] = {{");
+
+        for (auto data : airCompressed)
+            f.print("{},", data);
+
+        f.println("}};");
+        f.println("const size_t g_airCacheCompressedSize = {};", airCompressed.size());
+        f.println("const size_t g_airCacheDecompressedSize = {};", air.size());
+
+        fmt::println("AIR cache: {} bytes -> {} compressed", air.size(), airCompressed.size());
 #endif
 
         fmt::println("Compressing SPIRV cache...");
