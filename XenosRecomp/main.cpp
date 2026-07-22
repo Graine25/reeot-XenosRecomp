@@ -50,30 +50,6 @@ struct ShaderFailure
 static std::mutex g_failureMutex;
 static std::vector<ShaderFailure> g_failures;
 
-#ifdef XENOS_RECOMP_AIR
-// placeholder atm: the recompiler has no `__air__` branch yet, so 
-// recompiler.out would fail for every shader. A trivial shader of the right 
-// stage still exercises the rest of the AIR path. 
-// Pass recompiler.out once that branch exists.
-static std::string placeholderMetalSource(bool isPixelShader)
-{
-    if (isPixelShader)
-    {
-        return "#include <metal_stdlib>\n"
-               "using namespace metal;\n"
-               "[[fragment]] float4 shaderMain() { return float4(0.0, 0.0, 0.0, 1.0); }\n";
-    }
-
-    return "#include <metal_stdlib>\n"
-           "using namespace metal;\n"
-           "struct Varyings { float4 position [[position]]; };\n"
-           "[[vertex]] Varyings shaderMain() {\n"
-           "    Varyings out{};\n"
-           "    out.position = float4(0.0, 0.0, 0.0, 1.0);\n"
-           "    return out;\n"
-           "}\n";
-}
-#endif
 
 int main(int argc, char** argv)
 {
@@ -252,8 +228,7 @@ int main(int argc, char** argv)
 #ifdef XENOS_RECOMP_AIR
                 {
                     std::string airError;
-                    shader.air = AirCompiler::compile(
-                        placeholderMetalSource(recompiler.isPixelShader), airError);
+                    shader.air = AirCompiler::compile(recompiler.out, airError);
                     if (shader.air.empty())
                     {
                         recordFailure(std::move(airError));

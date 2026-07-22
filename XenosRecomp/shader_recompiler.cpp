@@ -826,6 +826,13 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
 
         out += " = ";
 
+        // HLSL truncates a wider result to the write mask; MSL will not, and the
+        // source swizzles here are always four components wide.
+        uint32_t vectorWriteComponents = 0;
+        for (size_t i = 0; i < 4; i++)
+            vectorWriteComponents += (vectorWriteMask >> i) & 0x1;
+        print("TRUNCATE{}(", vectorWriteComponents);
+
         if (instr.vectorSaturate)
             out += "saturate(";
 
@@ -849,19 +856,19 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
             break;
 
         case AluVectorOpcode::Seq:
-            print("{} == {}", op(VECTOR_0), op(VECTOR_1));
+            print("BOOL_TO_FLOAT({} == {})", op(VECTOR_0), op(VECTOR_1));
             break;
 
         case AluVectorOpcode::Sgt:
-            print("{} > {}", op(VECTOR_0), op(VECTOR_1));
+            print("BOOL_TO_FLOAT({} > {})", op(VECTOR_0), op(VECTOR_1));
             break;
 
         case AluVectorOpcode::Sge:
-            print("{} >= {}", op(VECTOR_0), op(VECTOR_1));
+            print("BOOL_TO_FLOAT({} >= {})", op(VECTOR_0), op(VECTOR_1));
             break;
 
         case AluVectorOpcode::Sne:
-            print("{} != {}", op(VECTOR_0), op(VECTOR_1));
+            print("BOOL_TO_FLOAT({} != {})", op(VECTOR_0), op(VECTOR_1));
             break;
 
         case AluVectorOpcode::Frc:
@@ -949,6 +956,8 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
 
         if (instr.vectorSaturate)
             out += ')';
+
+        out += ')';
 
         out += ";\n";
     }
@@ -1288,7 +1297,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     const auto constantTableContainer = reinterpret_cast<const ConstantTableContainer*>(shaderData + shaderContainer->constantTableOffset);
     constantTableData = reinterpret_cast<const uint8_t*>(&constantTableContainer->constantTable);
 
-    out += "#ifdef __spirv__\n\n";
+    out += "#if defined(__spirv__) || defined(__air__)\n\n";
 
 #ifdef UNLEASHED_RECOMP
     bool isMetaInstancer = false;
@@ -1337,12 +1346,12 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             {
                 uint32_t tailCount = (isPixelShader ? 224 : 256) - constantInfo->registerIndex;
 
-                println("#define {}(INDEX) select((INDEX) < {}, vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + ({} + min(INDEX, {})) * 16, 0x10), 0.0)",
+                println("#define {}(INDEX) select((INDEX) < {}, BUFFER_LOAD_FLOAT4(g_PushConstants.{}ShaderConstants + ({} + min(INDEX, {})) * 16), 0.0)",
                     constantName, tailCount, shaderName, constantInfo->registerIndex.get(), tailCount - 1);
             }
             else
             {
-                println("#define {} vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + {}, 0x10)",
+                println("#define {} BUFFER_LOAD_FLOAT4(g_PushConstants.{}ShaderConstants + {})",
                     constantName, shaderName, constantInfo->registerIndex * 16);
             }
             
@@ -1367,11 +1376,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         {
             for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
             {
-                println("#define {}_Texture{}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+                println("#define {}_Texture{}DescriptorIndex BUFFER_LOAD_UINT(g_PushConstants.SharedConstants + {})",
                     constantName, TEXTURE_DIMENSIONS[j], j * 64 + constantInfo->registerIndex * 4);
             }
 
-            println("#define {}_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+            println("#define {}_SamplerDescriptorIndex BUFFER_LOAD_UINT(g_PushConstants.SharedConstants + {})",
                 constantName, std::size(TEXTURE_DIMENSIONS) * 64 + constantInfo->registerIndex * 4);
 
             samplers.emplace(constantInfo->registerIndex, constantName);
@@ -1389,10 +1398,10 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             continue;
         for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
         {
-            println("#define s{}_Texture{}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+            println("#define s{}_Texture{}DescriptorIndex BUFFER_LOAD_UINT(g_PushConstants.SharedConstants + {})",
                 r, TEXTURE_DIMENSIONS[j], j * 64 + r * 4);
         }
-        println("#define s{}_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+        println("#define s{}_SamplerDescriptorIndex BUFFER_LOAD_UINT(g_PushConstants.SharedConstants + {})",
             r, std::size(TEXTURE_DIMENSIONS) * 64 + r * 4);
     }
 #endif
@@ -1503,7 +1512,87 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
     const auto shader = reinterpret_cast<const Shader*>(shaderData + shaderContainer->shaderOffset);
 
-    out += "#ifndef __spirv__\n";
+#ifdef REBLUE_RECOMP
+    // Metal entry point. The body below is language-neutral: it refers to iPos /
+    // oC0 / oTexCoord0 by bare name, so the MSL side declares locals for the
+    // inputs and macros for the outputs and leaves the body alone. Buffer
+    // indices match plume's Metal backend (descriptor sets 0-7, push
+    // constants at 8) and the parameter names are the ones shader_common.h's
+    // call-site macros expect.
+    {
+        const char* outputStructName = isPixelShader ? "PixelShaderOutput" : "Interpolators";
+
+        out += "#ifdef __air__\n\n";
+
+        // Input struct.
+        if (isPixelShader)
+        {
+            out += "struct Interpolators\n{\n";
+            out += "\tfloat4 iPos [[position]];\n";
+            for (auto& [usage, usageIndex] : INTERPOLATORS)
+                println("\tfloat4 i{0}{1} [[user({2}{1})]];", USAGE_VARIABLES[uint32_t(usage)], usageIndex, USAGE_SEMANTICS[uint32_t(usage)]);
+            out += "};\n\n";
+        }
+        else
+        {
+            auto vertexShader = reinterpret_cast<const VertexShader*>(shader);
+            out += "struct VertexShaderInput\n{\n";
+            for (uint32_t i = 0; i < vertexShader->vertexElementCount; i++)
+            {
+                union
+                {
+                    VertexElement vertexElement;
+                    uint32_t value;
+                };
+                value = vertexShader->vertexElementsAndInterpolators[vertexShader->field18 + i];
+
+                // attribute(i) is the i-th entry of the microcode's vertex-element
+                // table, matching [[vk::location(i)]] and the host's ParseGuestVertexInputs.
+                println("\t{0} i{1}{2} [[attribute({3})]];", USAGE_TYPES[uint32_t(vertexElement.usage)],
+                    USAGE_VARIABLES[uint32_t(vertexElement.usage)], uint32_t(vertexElement.usageIndex), i);
+            }
+            out += "};\n\n";
+        }
+
+        // Output struct.
+        println("struct {}\n{{", outputStructName);
+        if (isPixelShader)
+        {
+            auto pixelShader = reinterpret_cast<const PixelShader*>(shader);
+            if (pixelShader->outputs & PIXEL_SHADER_OUTPUT_COLOR0)
+                out += "\tfloat4 oC0 [[color(0)]];\n";
+            if (pixelShader->outputs & PIXEL_SHADER_OUTPUT_COLOR1)
+                out += "\tfloat4 oC1 [[color(1)]];\n";
+            if (pixelShader->outputs & PIXEL_SHADER_OUTPUT_COLOR2)
+                out += "\tfloat4 oC2 [[color(2)]];\n";
+            if (pixelShader->outputs & PIXEL_SHADER_OUTPUT_COLOR3)
+                out += "\tfloat4 oC3 [[color(3)]];\n";
+            if (pixelShader->outputs & PIXEL_SHADER_OUTPUT_DEPTH)
+                out += "\tfloat oDepthOut [[depth(any)]];\n";
+        }
+        else
+        {
+            out += "\tfloat4 oPos [[position]];\n";
+            for (auto& [usage, usageIndex] : INTERPOLATORS)
+                println("\tfloat4 o{0}{1} [[user({2}{1})]];", USAGE_VARIABLES[uint32_t(usage)], usageIndex, USAGE_SEMANTICS[uint32_t(usage)]);
+        }
+        out += "};\n\n";
+
+        println("[[{}]] {} shaderMain(", isPixelShader ? "fragment" : "vertex", outputStructName);
+        println("\t{} input [[stage_in]],", isPixelShader ? "Interpolators" : "VertexShaderInput");
+        if (isPixelShader)
+            out += "\tbool iFace [[front_facing]],\n";
+        out += "\tconstant Texture2DDescriptorHeap* g_Texture2DDescriptorHeap [[buffer(0)]],\n";
+        out += "\tconstant Texture3DDescriptorHeap* g_Texture3DDescriptorHeap [[buffer(1)]],\n";
+        out += "\tconstant TextureCubeDescriptorHeap* g_TextureCubeDescriptorHeap [[buffer(2)]],\n";
+        out += "\tconstant SamplerDescriptorHeap* g_SamplerDescriptorHeap [[buffer(3)]],\n";
+        out += "\tconstant PushConstants& g_PushConstants [[buffer(8)]])\n";
+
+        out += "\n#else\n\n";
+    }
+#endif
+
+    out += "#if !defined(__spirv__) && !defined(__air__)\n";
 
     if (isPixelShader)
         out += "[shader(\"pixel\")]\n";
@@ -1604,7 +1693,65 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     }
 
     out += ")\n";
+
+#ifdef REBLUE_RECOMP
+    out += "#endif\n";
+#endif
+
     out += "{\n";
+
+#ifdef REBLUE_RECOMP
+    // MSL prologue: bare-name locals for the stage_in members, and macros
+    // redirecting the output names at the struct the entry point returns.
+    {
+        out += "#ifdef __air__\n";
+
+        if (isPixelShader)
+        {
+            auto pixelShader = reinterpret_cast<const PixelShader*>(shader);
+            out += "\tPixelShaderOutput shaderOutput{};\n";
+            if (pixelShader->outputs & PIXEL_SHADER_OUTPUT_COLOR0) out += "\t#define oC0 shaderOutput.oC0\n";
+            if (pixelShader->outputs & PIXEL_SHADER_OUTPUT_COLOR1) out += "\t#define oC1 shaderOutput.oC1\n";
+            if (pixelShader->outputs & PIXEL_SHADER_OUTPUT_COLOR2) out += "\t#define oC2 shaderOutput.oC2\n";
+            if (pixelShader->outputs & PIXEL_SHADER_OUTPUT_COLOR3) out += "\t#define oC3 shaderOutput.oC3\n";
+            if (pixelShader->outputs & PIXEL_SHADER_OUTPUT_DEPTH)
+            {
+                // The body writes oDepth.x, which HLSL allows on a scalar and MSL
+                // does not, so route it through a vector and narrow it on return.
+                out += "\tfloat4 oDepthVec = 0.0;\n";
+                out += "\t#define oDepth oDepthVec\n";
+                out += "\t#undef SHADER_RETURN\n";
+                out += "\t#define SHADER_RETURN do { shaderOutput.oDepthOut = oDepthVec.x; return shaderOutput; } while (false)\n";
+            }
+
+            out += "\tfloat4 iPos = input.iPos;\n";
+            for (auto& [usage, usageIndex] : INTERPOLATORS)
+                println("\tfloat4 i{0}{1} = input.i{0}{1};", USAGE_VARIABLES[uint32_t(usage)], usageIndex);
+        }
+        else
+        {
+            auto vertexShader = reinterpret_cast<const VertexShader*>(shader);
+            out += "\tInterpolators shaderOutput{};\n";
+            out += "\t#define oPos shaderOutput.oPos\n";
+            for (auto& [usage, usageIndex] : INTERPOLATORS)
+                println("\t#define o{0}{1} shaderOutput.o{0}{1}", USAGE_VARIABLES[uint32_t(usage)], usageIndex);
+
+            for (uint32_t i = 0; i < vertexShader->vertexElementCount; i++)
+            {
+                union
+                {
+                    VertexElement vertexElement;
+                    uint32_t value;
+                };
+                value = vertexShader->vertexElementsAndInterpolators[vertexShader->field18 + i];
+                println("\t{0} i{1}{2} = input.i{1}{2};", USAGE_TYPES[uint32_t(vertexElement.usage)],
+                    USAGE_VARIABLES[uint32_t(vertexElement.usage)], uint32_t(vertexElement.usageIndex));
+            }
+        }
+
+        out += "#endif\n\n";
+    }
+#endif
 
 #ifdef UNLEASHED_RECOMP
     if (hasMtxProjection)
@@ -1775,10 +1922,10 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 #ifdef UNLEASHED_RECOMP
         out += "\tfloat2 pixelCoord = 0.0;\n";
 #endif
-        out += "\tCubeMapData cubeMapData = (CubeMapData)0;\n";
+        out += "\tCubeMapData cubeMapData = ZERO_STRUCT(CubeMapData);\n";
 #ifdef REBLUE_RECOMP
         if (hasShadowTexture)
-            out += "\tfloat2 shadowTapUV[8] = (float2[8])0;\n";
+            out += "\tfloat2 shadowTapUV[8] = ZERO_ARRAY(float2, 8);\n";
 #endif
     }
 
@@ -2122,7 +2269,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                 {
                     indent();
                 #ifdef UNLEASHED_RECOMP
-                    print("[unroll] ");
+                    print("UNROLL ");
                 #endif
                     println("for (aL = 0; aL < i{}.x; aL++)", uint32_t(cfInstr.loopStart.loopId));
                     indent();
@@ -2289,7 +2436,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                     specConstantsMask |= SPEC_CONSTANT_ALPHA_TEST;
 
                     indent();
-                    out += "[branch] if (g_SpecConstants() & SPEC_CONSTANT_ALPHA_TEST)";
+                    out += "BRANCH if (g_SpecConstants() & SPEC_CONSTANT_ALPHA_TEST)";
                     indent();
                     out += '{';
 
@@ -2337,7 +2484,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                     else
                 #endif
                     {
-                        out += "return;\n";
+                        // MSL returns the output struct; HLSL's outputs are out params.
+                        out += "SHADER_RETURN;\n";
                     }
                 }
                 else
@@ -2387,6 +2535,29 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
     if (!isPixelShader && hasMtxProjection)
         out += "\toPos.xy += g_HalfPixelOffset * oPos.w;\n";
+#endif
+
+#ifdef REBLUE_RECOMP
+    // Fall-through return for MSL, plus undef of the output macros so a later
+    // shader in the same translation unit cannot inherit them.
+    out += "\n#ifdef __air__\n";
+    out += "\tSHADER_RETURN;\n";
+    if (isPixelShader)
+    {
+        auto pixelShader = reinterpret_cast<const PixelShader*>(shader);
+        if (pixelShader->outputs & PIXEL_SHADER_OUTPUT_COLOR0) out += "\t#undef oC0\n";
+        if (pixelShader->outputs & PIXEL_SHADER_OUTPUT_COLOR1) out += "\t#undef oC1\n";
+        if (pixelShader->outputs & PIXEL_SHADER_OUTPUT_COLOR2) out += "\t#undef oC2\n";
+        if (pixelShader->outputs & PIXEL_SHADER_OUTPUT_COLOR3) out += "\t#undef oC3\n";
+        if (pixelShader->outputs & PIXEL_SHADER_OUTPUT_DEPTH)  out += "\t#undef oDepth\n";
+    }
+    else
+    {
+        out += "\t#undef oPos\n";
+        for (auto& [usage, usageIndex] : INTERPOLATORS)
+            println("\t#undef o{0}{1}", USAGE_VARIABLES[uint32_t(usage)], usageIndex);
+    }
+    out += "#endif\n";
 #endif
 
     out += "}";

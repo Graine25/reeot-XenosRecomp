@@ -115,6 +115,8 @@ std::vector<uint8_t> AirCompiler::compile(const std::string& shaderSource, std::
         "-DREBLUE_RECOMP",
 #endif
         "-Wno-unused-variable",
+        // The shim layer in shader_common.h leaves most overloads unused per shader.
+        "-Wno-unused-function",
         "-frecord-sources", "-gline-tables-only",
         nullptr
     };

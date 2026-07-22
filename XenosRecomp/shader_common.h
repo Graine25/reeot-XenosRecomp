@@ -77,12 +77,70 @@ static inline auto hlslSelect(C cond, A a, B b)
 // HLSL's inout becomes a thread reference in MSL.
 #define INOUT(T) thread T&
 
+// MSL entry points return their outputs; HLSL writes them through out params.
+#define SHADER_RETURN return shaderOutput
+
+// HLSL zero-initialises a struct with a cast from 0; MSL needs an empty brace init.
+#define ZERO_STRUCT(T) T{}
+// Same for a local array; MSL cannot spell the HLSL array cast at all.
+#define ZERO_ARRAY(T, N) {}
+
+// HLSL widens a comparison result to float implicitly; MSL will not.
+static inline float  boolToFloat(bool  v) { return v ? 1.0f : 0.0f; }
+static inline float2 boolToFloat(bool2 v) { return float2(v); }
+static inline float3 boolToFloat(bool3 v) { return float3(v); }
+static inline float4 boolToFloat(bool4 v) { return float4(v); }
+#define BOOL_TO_FLOAT(x) boolToFloat(x)
+
+// Flow-control attributes are HLSL-only.
+#define BRANCH
+#define UNROLL
+
+// HLSL narrows a wider result to the destination write mask on assignment; MSL
+// requires it to be explicit. A scalar still broadcasts, as it does in HLSL.
+// There are deliberately no widening overloads (e.g. float2 -> float3): HLSL
+// forbids that shape, so if the emitter ever produces it the compile fails
+// instead of silently zero-padding.
+static inline float  truncate1(float  v) { return v; }
+static inline float  truncate1(float2 v) { return v.x; }
+static inline float  truncate1(float3 v) { return v.x; }
+static inline float  truncate1(float4 v) { return v.x; }
+static inline float2 truncate2(float  v) { return float2(v); }
+static inline float2 truncate2(float2 v) { return v; }
+static inline float2 truncate2(float3 v) { return v.xy; }
+static inline float2 truncate2(float4 v) { return v.xy; }
+static inline float3 truncate3(float  v) { return float3(v); }
+static inline float3 truncate3(float3 v) { return v; }
+static inline float3 truncate3(float4 v) { return v.xyz; }
+static inline float4 truncate4(float  v) { return float4(v); }
+static inline float4 truncate4(float4 v) { return v; }
+#define TRUNCATE1(x) truncate1(x)
+#define TRUNCATE2(x) truncate2(x)
+#define TRUNCATE3(x) truncate3(x)
+#define TRUNCATE4(x) truncate4(x)
+
 #else
 
 #define FLT_MIN asfloat(0xff7fffff)
 #define FLT_MAX asfloat(0x7f7fffff)
 
 #define INOUT(T) inout T
+
+#define SHADER_RETURN return
+
+#define ZERO_STRUCT(T) (T)0
+
+#define ZERO_ARRAY(T, N) (T[N])0
+
+#define BOOL_TO_FLOAT(x) (x)
+
+#define BRANCH [branch]
+#define UNROLL [unroll]
+
+#define TRUNCATE1(x) (x)
+#define TRUNCATE2(x) (x)
+#define TRUNCATE3(x) (x)
+#define TRUNCATE4(x) (x)
 
 #endif
 
