@@ -1530,7 +1530,17 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             out += "struct Interpolators\n{\n";
             out += "\tfloat4 iPos [[position]];\n";
             for (auto& [usage, usageIndex] : INTERPOLATORS)
-                println("\tfloat4 i{0}{1} [[user({2}{1})]];", USAGE_VARIABLES[uint32_t(usage)], usageIndex, USAGE_SEMANTICS[uint32_t(usage)]);
+            {
+                // Mirror the HLSL branch's centroid on COLOR for MSAA. In MSL the
+                // interpolation qualifier lives on the fragment stage_in member,
+                // not on the vertex output, so this is the only place it goes.
+#ifdef REBLUE_RECOMP
+                const char* interpolation = (usage == DeclUsage::Color) ? ", centroid_perspective" : "";
+#else
+                const char* interpolation = "";
+#endif
+                println("\tfloat4 i{0}{1} [[user({2}{1}){3}]];", USAGE_VARIABLES[uint32_t(usage)], usageIndex, USAGE_SEMANTICS[uint32_t(usage)], interpolation);
+            }
             out += "};\n\n";
         }
         else
