@@ -538,12 +538,15 @@ float4 swapFloats(uint swappedMask, float4 value, uint semanticIndex)
     return (swappedMask & (1u << semanticIndex)) != 0 ? value.yxwz : value;
 }
 
-// Recover X360 integer-cast-to-float TEXCOORDs from R16G16(B16A16)_UINT bindings (sign-extend low 16 bits).
+// Recover X360 integer-cast-to-float TEXCOORDs. Metal binds the source as
+// UNORM so the float-class stage input matches MSL; scaling reconstructs the
+// exact 16-bit lane before sign extension.
 float4 sintTexcoord(uint mask, float4 value, uint semanticIndex)
 {
     if ((mask & (1u << semanticIndex)) != 0)
     {
-        int4 si = (int4(asuint(value)) << 16) >> 16;
+        uint4 raw = uint4(round(value * 65535.0f));
+        int4 si = (int4(raw) << 16) >> 16;
         return float4(si);
     }
     return value;
