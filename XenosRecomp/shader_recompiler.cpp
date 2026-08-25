@@ -382,7 +382,14 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
             out += "1.0 - ";
     #endif
 
+    #ifdef REEOT_RECOMP
+        // Route the sample through the per-slot TextureSign hook so the
+        // runtime can request the kUnsignedBiased (2c-1) fetch transform the
+        // console applies in hardware (see shader_common.h g_BiasedTextures).
+        out += "applyFetchSign(tfetch";
+    #else
         out += "tfetch";
+    #endif
         break;
     }
     case FetchOpcode::GetTextureWeights:
@@ -435,7 +442,14 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
         break;
     }
 
+#ifdef REEOT_RECOMP
+    if (instr.opcode == FetchOpcode::TextureFetch)
+        print("), g_BiasedTextures, {}).", instr.constIndex);
+    else
+        out += ").";
+#else
     out += ").";
+#endif
 
     printDstSwizzle(instr.dstSwizzle, true);
 

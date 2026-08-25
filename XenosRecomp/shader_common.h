@@ -46,8 +46,10 @@ struct PushConstants
 #define g_SwappedBlendWeights      vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 380)
 #define g_SwappedPositions         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 384)
 #define g_SintTexcoords            vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 388)
+// Per-slot Xenos TextureSign kUnsignedBiased mask (fetch returns 2c-1 on rgb).
+#define g_BiasedTextures           vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 392)
 // Xenos dynamic loop-constant register file (i0..i31): int4(count, start, step, _) per loop.
-// Placed after the shared block (ends at 392) at byte 400 == c25. TODO(reeot runtime): upload
+// Placed after the shared block (ends at 396) at byte 400 == c25. TODO(reeot runtime): upload
 // real loop constants here; zero-init makes undefined loops no-op.
 #define g_LoopConstants(i)         vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 400 + (i)*16)
 #else
@@ -76,6 +78,7 @@ struct PushConstants
     uint g_SwappedBlendWeights : packoffset(c23.w); \
     uint g_SwappedPositions : packoffset(c24.x); \
     uint g_SintTexcoords : packoffset(c24.y); \
+    uint g_BiasedTextures : packoffset(c24.z); \
     uint4 g_LoopConstantsArr[32] : packoffset(c25);
 
 #define g_Booleans(i) (g_BooleansArr[(i) / 4][(i) % 4])
@@ -112,6 +115,23 @@ uint2 getTexture2DDimensions(Texture2D<float4> texture)
     texture.GetDimensions(dimensions.x, dimensions.y);
     return dimensions;
 }
+
+#ifdef REEOT_RECOMP
+// Xenos TextureSign hook. `biasedMask` is the per-slot kUnsignedBiased mask
+// (g_BiasedTextures, filled by the runtime from the live fetch constants'
+// dword0 bits 2-9; the red-channel sign selects for the slot the way the
+// gamma path's does). Bit set = the console fetch returns 2c-1 on the colour
+// channels, which host texture hardware cannot do; EOT uses it on its normal
+// maps and its resolved G-buffer normal texture. The mask is passed as an
+// argument because the DXIL path declares it in the per-shader space4 cbuffer,
+// which is emitted after this header.
+float4 applyFetchSign(float4 value, uint biasedMask, uint slotIndex)
+{
+    if (biasedMask & (1u << slotIndex))
+        value.rgb = value.rgb * 2.0 - 1.0;
+    return value;
+}
+#endif
 
 float4 tfetch1D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float texCoord)
 {
