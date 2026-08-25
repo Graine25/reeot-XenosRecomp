@@ -225,15 +225,15 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
     {
     case DeclUsage::Normal:
         specConstantsMask |= SPEC_CONSTANT_R11G11B10_NORMAL;
-        print("tfetchR11G11B10(swapFloats(g_SwappedNormals, ");
+        print("tfetchR11G11B10(g_PackedDec3, swapFloats(g_SwappedNormals, ");
         break;
     case DeclUsage::Tangent:
         specConstantsMask |= SPEC_CONSTANT_R11G11B10_NORMAL;
-        print("tfetchR11G11B10(swapFloats(g_SwappedTangents, ");
+        print("tfetchR11G11B10(g_PackedDec3, swapFloats(g_SwappedTangents, ");
         break;
     case DeclUsage::Binormal:
         specConstantsMask |= SPEC_CONSTANT_R11G11B10_NORMAL;
-        print("tfetchR11G11B10(swapFloats(g_SwappedBinormals, ");
+        print("tfetchR11G11B10(g_PackedDec3, swapFloats(g_SwappedBinormals, ");
         break;
     case DeclUsage::BlendWeight:
         print("swapFloats(g_SwappedBlendWeights, ");
@@ -268,10 +268,19 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
 #ifdef REEOT_RECOMP
     switch (findResult->second.usage)
     {
+    // The dec3-mask slot code namespaces the three packed semantics into one
+    // uint: normal usageIndex 0-7, tangent 8-15, binormal 16-23.
     case DeclUsage::Normal:
+        print(", {}), {})", uint32_t(findResult->second.usageIndex),
+              uint32_t(findResult->second.usageIndex));
+        break;
     case DeclUsage::Tangent:
+        print(", {}), {})", uint32_t(findResult->second.usageIndex),
+              uint32_t(findResult->second.usageIndex) + 8u);
+        break;
     case DeclUsage::Binormal:
-        print(", {}))", uint32_t(findResult->second.usageIndex));
+        print(", {}), {})", uint32_t(findResult->second.usageIndex),
+              uint32_t(findResult->second.usageIndex) + 16u);
         break;
 
     case DeclUsage::TexCoord:

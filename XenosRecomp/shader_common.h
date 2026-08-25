@@ -48,6 +48,11 @@ struct PushConstants
 #define g_SintTexcoords            vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 388)
 // Per-slot Xenos TextureSign kUnsignedBiased mask (fetch returns 2c-1 on rgb).
 #define g_BiasedTextures           vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 392)
+// Packed NORMAL/TANGENT/BINORMAL attributes that are DEC3N (Xenos 2_10_10_10)
+// rather than 11:11:10. Bits: normal usageIndex 0-7, tangent 8-15, binormal
+// 16-23. EOT packs vertex normals 11:11:10 but tangents DEC3N in the same
+// mesh; one decode for all three garbled every skinned tangent basis.
+#define g_PackedDec3               vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 396)
 // Xenos dynamic loop-constant register file (i0..i31): int4(count, start, step, _) per loop.
 // Placed after the shared block (ends at 396) at byte 400 == c25. TODO(reeot runtime): upload
 // real loop constants here; zero-init makes undefined loops no-op.
@@ -79,6 +84,7 @@ struct PushConstants
     uint g_SwappedPositions : packoffset(c24.x); \
     uint g_SintTexcoords : packoffset(c24.y); \
     uint g_BiasedTextures : packoffset(c24.z); \
+    uint g_PackedDec3 : packoffset(c24.w); \
     uint4 g_LoopConstantsArr[32] : packoffset(c25);
 
 #define g_Booleans(i) (g_BooleansArr[(i) / 4][(i) % 4])
@@ -240,12 +246,23 @@ float4 tfetchCube(uint resourceDescriptorIndex, uint samplerDescriptorIndex, flo
 
 // Reblue specific, most likely needs to be changed for reeot
 #ifdef REEOT_RECOMP
-// DEC3N normal decode; IA binds as R32_UINT so lane .x carries the raw bits (asuint recovers them).
-float4 tfetchR11G11B10(float4 value)
+// Packed normal/tangent/binormal decode; IA binds as R32_UINT so lane .x
+// carries the raw bits (asuint recovers them). The GAME picks the packing per
+// attribute in its (runtime-patched) vertex declaration: EOT packs vertex
+// NORMALs 11:11:10 but TANGENTs DEC3N (Xenos 2_10_10_10, 10-bit snorm x3) in
+// the same mesh. `dec3Mask` bit `slotCode` (normal usageIndex 0-7, tangent
+// 8-15, binormal 16-23, filled by the runtime from the live fetch layout)
+// selects the DEC3N decode; clear = 11:11:10 as before.
+float4 tfetchR11G11B10(uint dec3Mask, float4 value, uint slotCode)
 {
     if (g_SpecConstants() & SPEC_CONSTANT_R11G11B10_NORMAL)
     {
         uint v = asuint(value.x);
+        if (dec3Mask & (1u << slotCode))
+        {
+            int3 s = int3(v << 22, v << 12, v << 2) >> 22;
+            return float4(max(float3(s) / 511.0, -1.0), 0.0);
+        }
         return float4(
             (v & 0x00000400 ? -1.0 : 0.0) + ((v & 0x3FF) / 1024.0),
             (v & 0x00200000 ? -1.0 : 0.0) + (((v >> 11) & 0x3FF) / 1024.0),
