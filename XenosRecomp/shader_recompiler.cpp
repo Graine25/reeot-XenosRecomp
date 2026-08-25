@@ -2273,6 +2273,16 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                     indent();
                     out += '}';
                 #endif
+
+                #ifdef REEOT_RECOMP
+                    // ConvertColor0ToGamma: the console RB encodes shader
+                    // output into k_8_8_8_8_GAMMA render targets with the
+                    // Xenos piecewise-linear curve. The runtime raises bit 31
+                    // of g_PackedDec3 when the bound guest colour target is
+                    // the GAMMA format (see shader_common.h).
+                    indent();
+                    out += "[branch] if (g_PackedDec3 & 0x80000000u) oC0.rgb = linearToPWLGamma(oC0.rgb);\n";
+                #endif
                 }
                 else
                 {
