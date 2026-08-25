@@ -308,17 +308,25 @@ float4 tfetchR11G11B10(uint dec3Mask, float4 value, uint slotCode)
 {
     if (g_SpecConstants() & SPEC_CONSTANT_R11G11B10_NORMAL)
     {
+        // w = 1.0: the Xenos vfetch of a 3-component packed format fills the
+        // missing lane with one, and the game's skinned VS depends on it --
+        // the tangent is skinned with 4-component dots (w picks up the bone
+        // translation row) and the binormal is cross(t, n) * t.w. Returning 0
+        // here skinned every character's tangent without translation and
+        // zeroed the binormal outright: broken TBN -> wrong G-buffer normals
+        // -> every deferred light shades characters wrong (the grey-cyan hue
+        // plus the missing warm fill on the title screen).
         uint v = asuint(value.x);
         if (dec3Mask & (1u << slotCode))
         {
             int3 s = int3(v << 22, v << 12, v << 2) >> 22;
-            return float4(max(float3(s) / 511.0, -1.0), 0.0);
+            return float4(max(float3(s) / 511.0, -1.0), 1.0);
         }
         return float4(
             (v & 0x00000400 ? -1.0 : 0.0) + ((v & 0x3FF) / 1024.0),
             (v & 0x00200000 ? -1.0 : 0.0) + (((v >> 11) & 0x3FF) / 1024.0),
             (v & 0x80000000 ? -1.0 : 0.0) + (((v >> 22) & 0x1FF) / 512.0),
-            0.0);
+            1.0);
     }
     return value;
 }
