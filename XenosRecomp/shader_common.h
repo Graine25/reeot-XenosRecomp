@@ -42,6 +42,7 @@ struct PushConstants
 #define g_SwappedPositions         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 384)
 #define g_SintTexcoords            vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 388)
 #define g_BiasedTextures           vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 392)
+#define g_PackedDec3               vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 396)
 #define g_LoopConstants(i)         vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 400 + (i)*16)
 #else
 #define g_Booleans                 vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 256)
@@ -69,6 +70,7 @@ struct PushConstants
     uint g_SwappedPositions : packoffset(c24.x); \
     uint g_SintTexcoords : packoffset(c24.y); \
     uint g_BiasedTextures : packoffset(c24.z); \
+    uint g_PackedDec3 : packoffset(c24.w); \
     uint4 g_LoopConstantsArr[32] : packoffset(c25);
 
 #define g_Booleans(i) (g_BooleansArr[(i) / 4][(i) % 4])
@@ -217,11 +219,16 @@ float4 tfetchCube(uint resourceDescriptorIndex, uint samplerDescriptorIndex, flo
 }
 
 #ifdef REEOT_RECOMP
-float4 tfetchR11G11B10(float4 value)
+float4 tfetchR11G11B10(uint dec3Mask, float4 value, uint slotCode)
 {
     if (g_SpecConstants() & SPEC_CONSTANT_R11G11B10_NORMAL)
     {
         uint v = asuint(value.x);
+        if (dec3Mask & (1u << slotCode))
+        {
+            int3 s = int3(v << 22, v << 12, v << 2) >> 22;
+            return float4(max(float3(s) / 511.0, -1.0), 0.0);
+        }
         return float4(
             (v & 0x00000400 ? -1.0 : 0.0) + ((v & 0x3FF) / 1024.0),
             (v & 0x00200000 ? -1.0 : 0.0) + (((v >> 11) & 0x3FF) / 1024.0),
