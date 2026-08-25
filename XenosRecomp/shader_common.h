@@ -41,6 +41,7 @@ struct PushConstants
 #define g_SwappedBlendWeights      vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 380)
 #define g_SwappedPositions         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 384)
 #define g_SintTexcoords            vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 388)
+#define g_BiasedTextures           vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 392)
 #define g_LoopConstants(i)         vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 400 + (i)*16)
 #else
 #define g_Booleans                 vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 256)
@@ -67,6 +68,7 @@ struct PushConstants
     uint g_SwappedBlendWeights : packoffset(c23.w); \
     uint g_SwappedPositions : packoffset(c24.x); \
     uint g_SintTexcoords : packoffset(c24.y); \
+    uint g_BiasedTextures : packoffset(c24.z); \
     uint4 g_LoopConstantsArr[32] : packoffset(c25);
 
 #define g_Booleans(i) (g_BooleansArr[(i) / 4][(i) % 4])
@@ -99,6 +101,15 @@ uint2 getTexture2DDimensions(Texture2D<float4> texture)
     texture.GetDimensions(dimensions.x, dimensions.y);
     return dimensions;
 }
+
+#ifdef REEOT_RECOMP
+float4 applyFetchSign(float4 value, uint biasedMask, uint slotIndex)
+{
+    if (biasedMask & (1u << slotIndex))
+        value.rgb = value.rgb * 2.0 - 1.0;
+    return value;
+}
+#endif
 
 float4 tfetch1D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float texCoord)
 {

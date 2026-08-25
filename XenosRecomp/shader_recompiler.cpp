@@ -370,7 +370,11 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
             out += "1.0 - ";
     #endif
 
+    #ifdef REEOT_RECOMP
+        out += "applyFetchSign(tfetch";
+    #else
         out += "tfetch";
+    #endif
         break;
     }
     case FetchOpcode::GetTextureWeights:
@@ -423,7 +427,14 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
         break;
     }
 
+#ifdef REEOT_RECOMP
+    if (instr.opcode == FetchOpcode::TextureFetch)
+        print("), g_BiasedTextures, {}).", instr.constIndex);
+    else
+        out += ").";
+#else
     out += ").";
+#endif
 
     printDstSwizzle(instr.dstSwizzle, true);
 
