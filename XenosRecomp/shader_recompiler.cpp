@@ -2282,6 +2282,18 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                     // the GAMMA format (see shader_common.h).
                     indent();
                     out += "[branch] if (g_PackedDec3 & 0x80000000u) oC0.rgb = linearToPWLGamma(oC0.rgb);\n";
+                    // Bit 30: the guest colour target is a UNORM format
+                    // (k_8_8_8_8 / k_2_10_10_10) whose console storage clamps
+                    // every write to [0, 1], but our mirror is float16 and
+                    // does not. Without this the HDR scene leaks >1 values
+                    // into the post pyramid: measured bloom level B up to
+                    // 1.85 where the console's byte ceiling is 1.0, giving
+                    // the value-dependent bloom excess (portal R 1.00x,
+                    // G 1.87x, B 2.61x vs the Xenia capture at matched beat).
+                    // The GAMMA path clamps already via linearToPWLGamma's
+                    // saturate.
+                    indent();
+                    out += "[branch] if (g_PackedDec3 & 0x40000000u) oC0 = saturate(oC0);\n";
                 #endif
                 }
                 else
