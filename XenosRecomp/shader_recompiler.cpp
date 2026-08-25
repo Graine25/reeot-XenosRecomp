@@ -2203,6 +2203,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                     indent();
                     out += '}';
                 #endif
+
+                #ifdef REEOT_RECOMP
+                    indent();
+                    out += "[branch] if (g_PackedDec3 & 0x80000000u) oC0.rgb = linearToPWLGamma(oC0.rgb);\n";
+                #endif
                 }
                 else
                 {

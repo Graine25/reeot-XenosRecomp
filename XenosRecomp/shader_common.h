@@ -105,10 +105,55 @@ uint2 getTexture2DDimensions(Texture2D<float4> texture)
 }
 
 #ifdef REEOT_RECOMP
+float pwlGammaToLinear1(float gamma)
+{
+    gamma = saturate(gamma);
+    float scale, offset;
+    if (gamma >= 96.0 / 255.0)
+    {
+        if (gamma >= 192.0 / 255.0) { scale = 8.0 / 1024.0; offset = -1024.0; }
+        else                        { scale = 4.0 / 1024.0; offset = -256.0; }
+    }
+    else
+    {
+        if (gamma >= 64.0 / 255.0)  { scale = 2.0 / 1024.0; offset = -64.0; }
+        else                        { scale = 1.0 / 1024.0; offset = 0.0; }
+    }
+    float lin = gamma * ((255.0 * 1024.0) * scale) + offset;
+    lin += trunc(lin * scale);
+    return lin * (1.0 / 1023.0);
+}
+
+float linearToPWLGamma1(float lin)
+{
+    lin = saturate(lin);
+    float scale, offset;
+    if (lin >= 128.0 / 1023.0)
+    {
+        if (lin >= 512.0 / 1023.0) { scale = 1023.0 / 8.0; offset = 128.0 / 255.0; }
+        else                       { scale = 1023.0 / 4.0; offset = 64.0 / 255.0; }
+    }
+    else
+    {
+        if (lin >= 64.0 / 1023.0)  { scale = 1023.0 / 2.0; offset = 32.0 / 255.0; }
+        else                       { scale = 1023.0;       offset = 0.0; }
+    }
+    return trunc(lin * scale) * (1.0 / 255.0) + offset;
+}
+
+float3 linearToPWLGamma(float3 lin)
+{
+    return float3(linearToPWLGamma1(lin.r), linearToPWLGamma1(lin.g),
+                  linearToPWLGamma1(lin.b));
+}
+
 float4 applyFetchSign(float4 value, uint biasedMask, uint slotIndex)
 {
     if (biasedMask & (1u << slotIndex))
         value.rgb = value.rgb * 2.0 - 1.0;
+    if (biasedMask & (1u << (16u + slotIndex)))
+        value.rgb = float3(pwlGammaToLinear1(value.r), pwlGammaToLinear1(value.g),
+                           pwlGammaToLinear1(value.b));
     return value;
 }
 #endif
