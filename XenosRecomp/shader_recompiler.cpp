@@ -1578,7 +1578,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             if (pixelShader->outputs & PIXEL_SHADER_OUTPUT_COLOR3)
                 out += "\tfloat4 oC3 [[color(3)]];\n";
             if (pixelShader->outputs & PIXEL_SHADER_OUTPUT_DEPTH)
-                out += "\tfloat oDepthOut [[depth(any)]];\n";
+                out += "\tfloat oDepthOut [[depth(any), function_constant(g_DepthEnabled)]];\n";
         }
         else
         {

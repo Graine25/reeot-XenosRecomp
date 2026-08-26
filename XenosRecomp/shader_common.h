@@ -227,6 +227,11 @@ static inline uint g_SpecConstants()
     return is_function_constant_defined(g_SpecConstantsValue) ? g_SpecConstantsValue : 0u;
 }
 
+// Function constant 1 removes the depth output when no attachment is bound.
+constant uint g_DepthEnabledValue [[function_constant(1)]];
+constant bool g_DepthEnabled =
+    is_function_constant_defined(g_DepthEnabledValue) && (g_DepthEnabledValue != 0u);
+
 #else
 
 #ifdef REBLUE_RECOMP
