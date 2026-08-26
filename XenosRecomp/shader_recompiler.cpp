@@ -1556,10 +1556,21 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                 };
                 value = vertexShader->vertexElementsAndInterpolators[vertexShader->field18 + i];
 
-                // attribute(i) is the i-th entry of the microcode's vertex-element
-                // table, matching [[vk::location(i)]] and the host's ParseGuestVertexInputs.
-                println("\t{0} i{1}{2} [[attribute({3})]];", USAGE_TYPES[uint32_t(vertexElement.usage)],
-                    USAGE_VARIABLES[uint32_t(vertexElement.usage)], uint32_t(vertexElement.usageIndex), i);
+                // Match the host layout through the shared location table.
+                bool locatedInput = false;
+                for (auto& usageLocation : USAGE_LOCATIONS)
+                {
+                    if (usageLocation.usage == vertexElement.usage && usageLocation.usageIndex == vertexElement.usageIndex)
+                    {
+                        println("\t{0} i{1}{2} [[attribute({3})]];", USAGE_TYPES[uint32_t(vertexElement.usage)],
+                            USAGE_VARIABLES[uint32_t(vertexElement.usage)], uint32_t(vertexElement.usageIndex),
+                            usageLocation.location);
+                        locatedInput = true;
+                        break;
+                    }
+                }
+                // Unmapped inputs have no host attribute.
+                assert(locatedInput);
             }
             out += "};\n\n";
         }
