@@ -147,10 +147,12 @@ float3 linearToPWLGamma(float3 lin)
                   linearToPWLGamma1(lin.b));
 }
 
-float4 applyFetchSign(float4 value, uint biasedMask, uint slotIndex)
+float4 applyFetchSign(float4 value, uint biasedMask, uint alphaMask, uint slotIndex)
 {
     if (biasedMask & (1u << slotIndex))
         value.rgb = value.rgb * 2.0 - 1.0;
+    if (alphaMask & (1u << (16u + slotIndex)))
+        value.a = value.a * 2.0 - 1.0;
     if (biasedMask & (1u << (16u + slotIndex)))
         value.rgb = float3(pwlGammaToLinear1(value.r), pwlGammaToLinear1(value.g),
                            pwlGammaToLinear1(value.b));
