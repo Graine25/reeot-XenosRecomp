@@ -453,7 +453,7 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
 
 #ifdef REEOT_RECOMP
     if (instr.opcode == FetchOpcode::TextureFetch)
-        print("), g_BiasedTextures, {}).", instr.constIndex);
+        print("), g_BiasedTextures, g_SintTexcoords, {}).", instr.constIndex);
     else
         out += ").";
 #else
