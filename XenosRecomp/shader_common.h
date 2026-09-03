@@ -44,6 +44,8 @@ struct PushConstants
 #define g_BiasedTextures           vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 392)
 #define g_PackedDec3               vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 396)
 #define g_LoopConstants(i)         vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 400 + (i)*16)
+#define g_PosScale                 vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 912)
+#define g_PosOffset                vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 928)
 #else
 #define g_Booleans                 vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 256)
 #define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 260)
@@ -71,7 +73,9 @@ struct PushConstants
     uint g_SintTexcoords : packoffset(c24.y); \
     uint g_BiasedTextures : packoffset(c24.z); \
     uint g_PackedDec3 : packoffset(c24.w); \
-    uint4 g_LoopConstantsArr[32] : packoffset(c25);
+    uint4 g_LoopConstantsArr[32] : packoffset(c25); \
+    float4 g_PosScale : packoffset(c57); \
+    float4 g_PosOffset : packoffset(c58);
 
 #define g_Booleans(i) (g_BooleansArr[(i) / 4][(i) % 4])
 #define g_LoopConstants(i) g_LoopConstantsArr[i]

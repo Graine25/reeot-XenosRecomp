@@ -2218,6 +2218,9 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                 #endif
                     {
                         out += "\toPos.xy += g_HalfPixelOffset * oPos.w;\n";
+                    #ifdef REEOT_RECOMP
+                        out += "\toPos.xyz = oPos.xyz * g_PosScale.xyz + g_PosOffset.xyz * oPos.w;\n";
+                    #endif
                     }
                 }
 
