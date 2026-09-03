@@ -57,6 +57,8 @@ struct PushConstants
 // Placed after the shared block (ends at 396) at byte 400 == c25. TODO(reeot runtime): upload
 // real loop constants here; zero-init makes undefined loops no-op.
 #define g_LoopConstants(i)         vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 400 + (i)*16)
+#define g_PosScale                 vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 912)
+#define g_PosOffset                vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 928)
 #else
 #define g_Booleans                 vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 256)
 #define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 260)
@@ -85,7 +87,9 @@ struct PushConstants
     uint g_SintTexcoords : packoffset(c24.y); \
     uint g_BiasedTextures : packoffset(c24.z); \
     uint g_PackedDec3 : packoffset(c24.w); \
-    uint4 g_LoopConstantsArr[32] : packoffset(c25);
+    uint4 g_LoopConstantsArr[32] : packoffset(c25); \
+    float4 g_PosScale : packoffset(c57); \
+    float4 g_PosOffset : packoffset(c58);
 
 #define g_Booleans(i) (g_BooleansArr[(i) / 4][(i) % 4])
 // Xenos dynamic loop-constant register file (i0..i31): int4(count, start, step, _) per loop.
