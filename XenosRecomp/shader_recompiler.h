@@ -52,6 +52,9 @@ struct ShaderRecompiler : StringBuffer
     uint32_t lastFullVfetchAddress = 0;
     uint32_t physicalCodeOffset = 0;
     bool usesFloatConstants = false;
+    uint32_t interpolantMask = 0;
+    enum class InterpolantVariant : uint8_t { Trimmed, Full, PositionOnly };
+    InterpolantVariant interpolantVariant = InterpolantVariant::Trimmed;
 #endif
 
 #ifdef UNLEASHED_RECOMP
