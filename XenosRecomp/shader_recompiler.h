@@ -66,6 +66,19 @@ struct ShaderRecompiler : StringBuffer
     // needs this to pick pixel->NDC conversion, and can't reflect it from the
     // DXIL because spec-constant shaders are stored as libraries).
     bool usesFloatConstants = false;
+    // The VS->PS interpolants, one bit per entry of INTERPOLATORS (TEXCOORD0-15
+    // = bits 0-15, COLOR0-1 = 16-17, NORMAL0-1 = 18-19): the ones this shader's
+    // container table says it writes (VS) or reads (PS). The signature declares
+    // only those, so the host VS exports 4-6 attributes instead of 21 (the
+    // driver does not prune exports the PS never reads).
+    uint32_t interpolantMask = 0;
+    // Vertex shaders only. Trimmed declares the mask; Full declares every
+    // interpolant (for a PS reading one the VS never writes: the console left
+    // it zero, and so does this); PositionOnly declares none, for draws
+    // without a pixel shader (shadow casters, depth priming), where the
+    // compiler then drops the interpolant maths as well.
+    enum class InterpolantVariant : uint8_t { Trimmed, Full, PositionOnly };
+    InterpolantVariant interpolantVariant = InterpolantVariant::Trimmed;
 #endif
 
 #ifdef UNLEASHED_RECOMP

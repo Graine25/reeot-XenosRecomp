@@ -1462,6 +1462,52 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
     const auto shader = reinterpret_cast<const Shader*>(shaderData + shaderContainer->shaderOffset);
 
+// Reblue specific, most likely needs to be changed for reeot
+#ifdef REEOT_RECOMP
+    // The container's interpolator table, read ahead of the signature: the
+    // entries of INTERPOLATORS this shader writes (VS) or reads (PS). The
+    // signature below declares only those (see interpolantVariant).
+    {
+        const uint32_t count = (shader->interpolatorInfo >> 5) & 0x1F;
+        for (uint32_t i = 0; i < count; i++)
+        {
+            union
+            {
+                Interpolator interpolator;
+                uint32_t value;
+            };
+            if (isPixelShader)
+            {
+                value = reinterpret_cast<const PixelShader*>(shader)->interpolators[i];
+            }
+            else
+            {
+                auto vertexShader = reinterpret_cast<const VertexShader*>(shader);
+                value = vertexShader->vertexElementsAndInterpolators[vertexShader->field18 + vertexShader->vertexElementCount + i];
+            }
+            for (size_t k = 0; k < std::size(INTERPOLATORS); k++)
+            {
+                if (INTERPOLATORS[k].first == interpolator.usage && INTERPOLATORS[k].second == uint32_t(interpolator.usageIndex))
+                    interpolantMask |= 1u << k;
+            }
+        }
+    }
+    if (isPixelShader)
+        interpolantVariant = InterpolantVariant::Trimmed;
+    auto declaresInterpolant = [&](size_t k)
+    {
+        switch (interpolantVariant)
+        {
+        case InterpolantVariant::Full:
+            return true;
+        case InterpolantVariant::PositionOnly:
+            return false;
+        default:
+            return ((interpolantMask >> k) & 1u) != 0;
+        }
+    };
+#endif
+
     out += "#ifndef __spirv__\n";
 
     if (isPixelShader)
@@ -1480,8 +1526,21 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     {
         out += "\tin float4 iPos : SV_Position,\n";
 
+// Reblue specific, most likely needs to be changed for reeot
+#ifdef REEOT_RECOMP
+        // Explicit locations: with a trimmed list both stages must still agree
+        // on the SPIR-V location of each interpolant (DXIL matches by semantic).
+        for (size_t k = 0; k < std::size(INTERPOLATORS); k++)
+        {
+            if (!declaresInterpolant(k))
+                continue;
+            const auto& [usage, usageIndex] = INTERPOLATORS[k];
+            println("\t[[vk::location({0})]] in float4 i{1}{2} : {3}{2},", k, USAGE_VARIABLES[uint32_t(usage)], usageIndex, USAGE_SEMANTICS[uint32_t(usage)]);
+        }
+#else
         for (auto& [usage, usageIndex] : INTERPOLATORS)
             println("\tin float4 i{0}{1} : {2}{1},", USAGE_VARIABLES[uint32_t(usage)], usageIndex, USAGE_SEMANTICS[uint32_t(usage)]);
+#endif
 
         out += "#ifdef __spirv__\n";
         out += "\tin bool iFace : SV_IsFrontFace\n";
@@ -1557,8 +1616,19 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
         out += "\tout float4 oPos : SV_Position";
 
+// Reblue specific, most likely needs to be changed for reeot
+#ifdef REEOT_RECOMP
+        for (size_t k = 0; k < std::size(INTERPOLATORS); k++)
+        {
+            if (!declaresInterpolant(k))
+                continue;
+            const auto& [usage, usageIndex] = INTERPOLATORS[k];
+            print(",\n\t[[vk::location({0})]] out float4 o{1}{2} : {3}{2}", k, USAGE_VARIABLES[uint32_t(usage)], usageIndex, USAGE_SEMANTICS[uint32_t(usage)]);
+        }
+#else
         for (auto& [usage, usageIndex] : INTERPOLATORS)
             print(",\n\tout float4 o{0}{1} : {2}{1}", USAGE_VARIABLES[uint32_t(usage)], usageIndex, USAGE_SEMANTICS[uint32_t(usage)]);
+#endif
     }
 
     out += ")\n";
@@ -1670,8 +1740,26 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         out += "\toPos = 0.0;\n";
     #endif
 
+// Reblue specific, most likely needs to be changed for reeot
+#ifdef REEOT_RECOMP
+        for (size_t k = 0; k < std::size(INTERPOLATORS); k++)
+        {
+            const auto& [usage, usageIndex] = INTERPOLATORS[k];
+            if (interpolantVariant == InterpolantVariant::PositionOnly)
+            {
+                // The exports the code writes become locals the compiler drops.
+                if ((interpolantMask >> k) & 1u)
+                    println("\tfloat4 o{}{} = 0.0;", USAGE_VARIABLES[uint32_t(usage)], usageIndex);
+            }
+            else if (declaresInterpolant(k))
+            {
+                println("\to{}{} = 0.0;", USAGE_VARIABLES[uint32_t(usage)], usageIndex);
+            }
+        }
+#else
         for (auto& [usage, usageIndex] : INTERPOLATORS)
             println("\to{}{} = 0.0;", USAGE_VARIABLES[uint32_t(usage)], usageIndex);
+#endif
 
         out += "\n";
     }

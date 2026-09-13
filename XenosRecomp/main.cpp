@@ -35,6 +35,14 @@ struct RecompiledShader
     std::vector<VertexFetchLayoutRecord> vertexLayout;  // empty for pixel shaders
     uint32_t vfetchCodeOffset = 0;                      // instruction base in the physical part
     uint32_t usesFloatConstants = 0;                    // 0 = window-space VS (no WVP constants)
+    uint32_t interpolantMask = 0;                       // ShaderRecompiler::interpolantMask
+    // VS only: the full and the position-only interpolant variants
+    // (shader_recompiler.h); empty when the variant failed to compile, the
+    // runtime then uses the trimmed blob.
+    IDxcBlob* fullDxil = nullptr;
+    std::vector<uint8_t> fullSpirv;
+    IDxcBlob* posDxil = nullptr;
+    std::vector<uint8_t> posSpirv;
 #endif
 };
 
@@ -47,6 +55,12 @@ struct ShaderFailure
 
 static std::mutex g_failureMutex;
 static std::vector<ShaderFailure> g_failures;
+// Reblue specific, most likely needs to be changed for reeot
+#ifdef REEOT_RECOMP
+// A vertex shader whose full or position-only variant failed keeps its
+// trimmed blob for that variant; reported, not fatal.
+static std::vector<ShaderFailure> g_variantFailures;
+#endif
 
 int main(int argc, char** argv)
 {
@@ -309,6 +323,66 @@ int main(int argc, char** argv)
 
                 spirv->Release();
 
+// Reblue specific, most likely needs to be changed for reeot
+#ifdef REEOT_RECOMP
+                shader.interpolantMask = recompiler.interpolantMask;
+                if (!recompiler.isPixelShader)
+                {
+                    struct Variant
+                    {
+                        ShaderRecompiler::InterpolantVariant kind;
+                        IDxcBlob** dxil;
+                        std::vector<uint8_t>* spirv;
+                        const char* name;
+                    };
+                    const Variant variants[] = {
+                        { ShaderRecompiler::InterpolantVariant::Full, &shader.fullDxil, &shader.fullSpirv, "full" },
+                        { ShaderRecompiler::InterpolantVariant::PositionOnly, &shader.posDxil, &shader.posSpirv, "position-only" },
+                    };
+                    for (const Variant& v : variants)
+                    {
+                        auto variantFailure = [&](const char* reason)
+                        {
+                            std::lock_guard<std::mutex> lock(g_failureMutex);
+                            g_variantFailures.push_back({hash, fmt::format("{} variant: {}", v.name, reason)});
+                            if (*v.dxil != nullptr)
+                            {
+                                (*v.dxil)->Release();
+                                *v.dxil = nullptr;
+                            }
+                            v.spirv->clear();
+                        };
+                        recompiler = {};
+                        recompiler.interpolantVariant = v.kind;
+                        recompiler.recompile(shader.data, include);
+                        if (recompiler.specConstantsMask != shader.specConstantsMask ||
+                            recompiler.interpolantMask != shader.interpolantMask)
+                        {
+                            variantFailure("recompiled differently");
+                            continue;
+                        }
+#ifdef XENOS_RECOMP_DXIL
+                        *v.dxil = dxcCompiler.compile(recompiler.out, false, shader.specConstantsMask != 0, false);
+                        if (*v.dxil == nullptr || *(reinterpret_cast<uint32_t*>((*v.dxil)->GetBufferPointer()) + 1) == 0)
+                        {
+                            variantFailure("dxc-dxil-compile-failed");
+                            continue;
+                        }
+#endif
+                        IDxcBlob* variantSpirv = dxcCompiler.compile(recompiler.out, false, false, true);
+                        if (variantSpirv == nullptr)
+                        {
+                            variantFailure("dxc-spirv-compile-failed");
+                            continue;
+                        }
+                        const bool encoded = smolv::Encode(variantSpirv->GetBufferPointer(), variantSpirv->GetBufferSize(), *v.spirv, smolv::kEncodeFlagStripDebugInfo);
+                        variantSpirv->Release();
+                        if (!encoded)
+                            variantFailure("smolv-encode-failed");
+                    }
+                }
+#endif
+
                 size_t currentProgress = ++progress;
                 if ((currentProgress % 10) == 0 || (currentProgress == shaders.size() - 1))
                     fmt::println("Recompiling shaders... {}%", currentProgress / float(shaders.size()) * 100.0f);
@@ -323,6 +397,16 @@ int main(int argc, char** argv)
             for (const auto& failure : g_failures)
                 shaders.erase(failure.hash);
         }
+
+// Reblue specific, most likely needs to be changed for reeot
+#ifdef REEOT_RECOMP
+        if (!g_variantFailures.empty())
+        {
+            fmt::println(stderr, "WARNING: {} vertex shader variant(s) failed (the trimmed blob stands in):", g_variantFailures.size());
+            for (const auto& failure : g_variantFailures)
+                fmt::println(stderr, "  hash=0x{:016X} {}", failure.hash, failure.reason);
+        }
+#endif
 
         fmt::println("Creating shader cache...");
 
@@ -341,10 +425,30 @@ int main(int argc, char** argv)
         {
 // Reblue specific, most likely needs to be changed for reeot
 #ifdef REEOT_RECOMP
-            f.println("\t{{ 0x{:X}, {}, {}, {}, {}, {}, {}, {}, {}, {} }},",
-                hash, dxil.size(), (shader.dxil != nullptr) ? shader.dxil->GetBufferSize() : 0, spirv.size(), shader.spirv.size(), shader.specConstantsMask,
+            // The blobs of a shader sit together: trimmed, then (VS) full and
+            // position-only; each slot is (dxil offset, size, spirv offset, size).
+            auto append = [&](IDxcBlob* d, const std::vector<uint8_t>& sp, size_t slot[4])
+            {
+                slot[0] = dxil.size();
+                slot[1] = (d != nullptr) ? d->GetBufferSize() : 0;
+                if (d != nullptr)
+                {
+                    dxil.insert(dxil.end(), reinterpret_cast<uint8_t*>(d->GetBufferPointer()),
+                        reinterpret_cast<uint8_t*>(d->GetBufferPointer()) + d->GetBufferSize());
+                }
+                slot[2] = spirv.size();
+                slot[3] = sp.size();
+                spirv.insert(spirv.end(), sp.begin(), sp.end());
+            };
+            size_t primary[4], full[4], pos[4];
+            append(shader.dxil, shader.spirv, primary);
+            append(shader.fullDxil, shader.fullSpirv, full);
+            append(shader.posDxil, shader.posSpirv, pos);
+            f.println("\t{{ 0x{:X}, {}, {}, {}, {}, {}, {}, {}, {}, {}, 0x{:X}, {}, {}, {}, {}, {}, {}, {}, {} }},",
+                hash, primary[0], primary[1], primary[2], primary[3], shader.specConstantsMask,
                 vertexLayouts.size(), shader.vertexLayout.size(), shader.vfetchCodeOffset,
-                shader.usesFloatConstants);
+                shader.usesFloatConstants, shader.interpolantMask,
+                full[0], full[1], full[2], full[3], pos[0], pos[1], pos[2], pos[3]);
             for (const VertexFetchLayoutRecord& r : shader.vertexLayout)
             {
                 vertexLayouts.push_back(r.w0);
@@ -355,6 +459,8 @@ int main(int argc, char** argv)
                 hash, dxil.size(), (shader.dxil != nullptr) ? shader.dxil->GetBufferSize() : 0, spirv.size(), shader.spirv.size(), shader.specConstantsMask);
 #endif
 
+// Reblue specific, most likely needs to be changed for reeot
+#ifndef REEOT_RECOMP
             if (shader.dxil != nullptr)
             {
                 dxil.insert(dxil.end(), reinterpret_cast<uint8_t *>(shader.dxil->GetBufferPointer()),
@@ -362,6 +468,7 @@ int main(int argc, char** argv)
             }
 
             spirv.insert(spirv.end(), shader.spirv.begin(), shader.spirv.end());
+#endif
         }
 
         f.println("}};");
