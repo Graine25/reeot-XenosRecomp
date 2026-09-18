@@ -497,6 +497,28 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
         SCALAR_CONSTANT_1
     };
 
+    bool scalarReadsVectorDest = false;
+    if (!instr.exportData && instr.vectorWriteMask != 0 && instr.scalarOpcode != AluScalarOpcode::RetainPrev)
+    {
+        const bool constantScalar =
+            instr.scalarOpcode == AluScalarOpcode::Mulsc0 || instr.scalarOpcode == AluScalarOpcode::Mulsc1 ||
+            instr.scalarOpcode == AluScalarOpcode::Addsc0 || instr.scalarOpcode == AluScalarOpcode::Addsc1 ||
+            instr.scalarOpcode == AluScalarOpcode::Subsc0 || instr.scalarOpcode == AluScalarOpcode::Subsc1;
+        uint32_t scalarReg;
+        bool scalarSelect;
+        if (constantScalar)
+        {
+            scalarReg = (uint32_t(instr.scalarOpcode) & 1) | (instr.src3Select << 1) | (instr.src3Swizzle & 0x3C);
+            scalarSelect = true;
+        }
+        else
+        {
+            scalarReg = instr.src3Register & 0x3F;
+            scalarSelect = instr.src3Select;
+        }
+        scalarReadsVectorDest = scalarSelect && scalarReg == instr.vectorDest;
+    }
+
     auto op = [&](size_t operand)
         {
             size_t reg = 0;
@@ -565,7 +587,11 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
 
             if (select)
             {
-                regFormatted = fmt::format("r{}", reg);
+                const bool scalarOperand = operand == SCALAR_0 || operand == SCALAR_1 || operand == SCALAR_CONSTANT_1;
+                if (scalarOperand && scalarReadsVectorDest && reg == instr.vectorDest)
+                    regFormatted = "vpre";
+                else
+                    regFormatted = fmt::format("r{}", reg);
             }
             else
             {
@@ -780,6 +806,12 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
     uint32_t vectorWriteMask = instr.vectorWriteMask;
     if (instr.exportData)
         vectorWriteMask &= ~instr.scalarWriteMask;
+
+    if (scalarReadsVectorDest)
+    {
+        indent();
+        println("vpre = r{};", instr.vectorDest);
+    }
 
     if (vectorWriteMask != 0)
     {
@@ -1790,6 +1822,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     out += "\tint aL = 0;\n";
     out += "\tbool p0 = false;\n";
     out += "\tfloat ps = 0.0;\n";
+    out += "\tfloat4 vpre = 0.0;\n";
     if (isPixelShader)
     {
 #ifdef UNLEASHED_RECOMP
