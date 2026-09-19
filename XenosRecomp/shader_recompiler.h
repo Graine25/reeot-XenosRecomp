@@ -53,8 +53,9 @@ struct ShaderRecompiler : StringBuffer
     uint32_t physicalCodeOffset = 0;
     bool usesFloatConstants = false;
     uint32_t interpolantMask = 0;
-    enum class InterpolantVariant : uint8_t { Trimmed, Full, PositionOnly };
+    enum class InterpolantVariant : uint8_t { Trimmed, Full, PositionOnly, Velocity };
     InterpolantVariant interpolantVariant = InterpolantVariant::Trimmed;
+    bool velocityVertexShader() const { return !isPixelShader && interpolantVariant == InterpolantVariant::Velocity; }
 #endif
 
 #ifdef UNLEASHED_RECOMP

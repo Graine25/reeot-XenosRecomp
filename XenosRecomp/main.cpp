@@ -39,6 +39,8 @@ struct RecompiledShader
     std::vector<uint8_t> fullSpirv;
     IDxcBlob* posDxil = nullptr;
     std::vector<uint8_t> posSpirv;
+    IDxcBlob* velDxil = nullptr;
+    std::vector<uint8_t> velSpirv;
 #endif
 };
 
@@ -95,9 +97,12 @@ int main(int argc, char** argv)
 
     bool hlslDump = false;
     bool dxilDump = false;
+    bool velocityDump = false;
 #ifndef XENOS_RECOMP_INPUT
     if (argc >= 5 && std::string_view(argv[4]) == "--hlsl")
         hlslDump = true;
+    if (argc >= 5 && std::string_view(argv[4]) == "--hlsl-vel")
+        hlslDump = velocityDump = true;
     if (argc >= 5 && std::string_view(argv[4]) == "--dxil")
         dxilDump = true;
 #endif
@@ -175,6 +180,10 @@ int main(int argc, char** argv)
 
                     thread_local ShaderRecompiler recompiler;
                     recompiler = {};
+#ifdef REEOT_RECOMP
+                    if (velocityDump)
+                        recompiler.interpolantVariant = ShaderRecompiler::InterpolantVariant::Velocity;
+#endif
                     try
                     {
                         recompiler.recompile(hashShaderPair.second.data, include);
@@ -304,7 +313,6 @@ int main(int argc, char** argv)
 
 #ifdef REEOT_RECOMP
                 shader.interpolantMask = recompiler.interpolantMask;
-                if (!recompiler.isPixelShader)
                 {
                     struct Variant
                     {
@@ -313,12 +321,21 @@ int main(int argc, char** argv)
                         std::vector<uint8_t>* spirv;
                         const char* name;
                     };
-                    const Variant variants[] = {
+                    const bool isPixel = recompiler.isPixelShader;
+                    const Variant vertexVariants[] = {
                         { ShaderRecompiler::InterpolantVariant::Full, &shader.fullDxil, &shader.fullSpirv, "full" },
                         { ShaderRecompiler::InterpolantVariant::PositionOnly, &shader.posDxil, &shader.posSpirv, "position-only" },
+                        { ShaderRecompiler::InterpolantVariant::Velocity, &shader.velDxil, &shader.velSpirv, "velocity" },
                     };
-                    for (const Variant& v : variants)
+                    const size_t vertexCount = shader.usesFloatConstants ? 3 : 2;
+                    const Variant pixelVariants[] = {
+                        { ShaderRecompiler::InterpolantVariant::Velocity, &shader.velDxil, &shader.velSpirv, "velocity" },
+                    };
+                    const Variant* variants = isPixel ? pixelVariants : vertexVariants;
+                    const size_t variantCount = isPixel ? 1 : vertexCount;
+                    for (size_t vi = 0; vi < variantCount; vi++)
                     {
+                        const Variant& v = variants[vi];
                         auto variantFailure = [&](const char* reason)
                         {
                             std::lock_guard<std::mutex> lock(g_failureMutex);
@@ -340,14 +357,14 @@ int main(int argc, char** argv)
                             continue;
                         }
 #ifdef XENOS_RECOMP_DXIL
-                        *v.dxil = dxcCompiler.compile(recompiler.out, false, shader.specConstantsMask != 0, false);
+                        *v.dxil = dxcCompiler.compile(recompiler.out, isPixel, shader.specConstantsMask != 0, false);
                         if (*v.dxil == nullptr || *(reinterpret_cast<uint32_t*>((*v.dxil)->GetBufferPointer()) + 1) == 0)
                         {
                             variantFailure("dxc-dxil-compile-failed");
                             continue;
                         }
 #endif
-                        IDxcBlob* variantSpirv = dxcCompiler.compile(recompiler.out, false, false, true);
+                        IDxcBlob* variantSpirv = dxcCompiler.compile(recompiler.out, isPixel, false, true);
                         if (variantSpirv == nullptr)
                         {
                             variantFailure("dxc-spirv-compile-failed");
@@ -378,7 +395,7 @@ int main(int argc, char** argv)
 #ifdef REEOT_RECOMP
         if (!g_variantFailures.empty())
         {
-            fmt::println(stderr, "WARNING: {} vertex shader variant(s) failed (the trimmed blob stands in):", g_variantFailures.size());
+            fmt::println(stderr, "WARNING: {} shader variant(s) failed (the trimmed blob stands in; a failed velocity variant means no motion vector for that shader):", g_variantFailures.size());
             for (const auto& failure : g_variantFailures)
                 fmt::println(stderr, "  hash=0x{:016X} {}", failure.hash, failure.reason);
         }
@@ -414,15 +431,17 @@ int main(int argc, char** argv)
                 slot[3] = sp.size();
                 spirv.insert(spirv.end(), sp.begin(), sp.end());
             };
-            size_t primary[4], full[4], pos[4];
+            size_t primary[4], full[4], pos[4], vel[4];
             append(shader.dxil, shader.spirv, primary);
             append(shader.fullDxil, shader.fullSpirv, full);
             append(shader.posDxil, shader.posSpirv, pos);
-            f.println("\t{{ 0x{:X}, {}, {}, {}, {}, {}, {}, {}, {}, {}, 0x{:X}, {}, {}, {}, {}, {}, {}, {}, {} }},",
+            append(shader.velDxil, shader.velSpirv, vel);
+            f.println("\t{{ 0x{:X}, {}, {}, {}, {}, {}, {}, {}, {}, {}, 0x{:X}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {} }},",
                 hash, primary[0], primary[1], primary[2], primary[3], shader.specConstantsMask,
                 vertexLayouts.size(), shader.vertexLayout.size(), shader.vfetchCodeOffset,
                 shader.usesFloatConstants, shader.interpolantMask,
-                full[0], full[1], full[2], full[3], pos[0], pos[1], pos[2], pos[3]);
+                full[0], full[1], full[2], full[3], pos[0], pos[1], pos[2], pos[3],
+                vel[0], vel[1], vel[2], vel[3]);
             for (const VertexFetchLayoutRecord& r : shader.vertexLayout)
             {
                 vertexLayouts.push_back(r.w0);

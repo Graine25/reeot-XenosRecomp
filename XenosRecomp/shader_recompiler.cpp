@@ -595,12 +595,20 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
                         {
                             regFormatted = fmt::format("{}({}{})", constantName,
                                 reg - findResult->second->registerIndex, instr.const0Relative ? (instr.constAddressRegisterRelative ? " + a0" : " + aL") : "");
+#ifdef REEOT_RECOMP
+                            if (velocityVertexShader())
+                                regFormatted = fmt::format("(velIter == 0 ? prev_{} : {})", regFormatted, regFormatted);
+#endif
                         }
                     }
                     else
                     {
                         assert(!instr.const0Relative && !instr.const1Relative);
                         regFormatted = constantName;
+#ifdef REEOT_RECOMP
+                        if (velocityVertexShader())
+                            regFormatted = fmt::format("(velIter == 0 ? prev_{} : {})", constantName, constantName);
+#endif
                     }
                 }
                 else
@@ -1290,11 +1298,21 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
                 println("#define {}(INDEX) select((INDEX) < {}, vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + ({} + min(INDEX, {})) * 16, 0x10), 0.0)",
                     constantName, tailCount, shaderName, constantInfo->registerIndex.get(), tailCount - 1);
+#ifdef REEOT_RECOMP
+                if (velocityVertexShader())
+                    println("#define prev_{}(INDEX) select((INDEX) < {}, vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + 4096 + ({} + min(INDEX, {})) * 16, 0x10), 0.0)",
+                        constantName, tailCount, shaderName, constantInfo->registerIndex.get(), tailCount - 1);
+#endif
             }
             else
             {
                 println("#define {} vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + {}, 0x10)",
                     constantName, shaderName, constantInfo->registerIndex * 16);
+#ifdef REEOT_RECOMP
+                if (velocityVertexShader())
+                    println("#define prev_{} vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + 4096 + {}, 0x10)",
+                        constantName, shaderName, constantInfo->registerIndex * 16);
+#endif
             }
 
 #ifdef REEOT_RECOMP
@@ -1388,6 +1406,20 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                 uint32_t tailCount = (isPixelShader ? 224 : 256) - constantInfo->registerIndex;
                 println("#define {0}(INDEX) select((INDEX) < {1}, {0}[min(INDEX, {2})], 0.0)", constantName, tailCount, tailCount - 1);
             }
+#ifdef REEOT_RECOMP
+            if (velocityVertexShader())
+            {
+                print("\tfloat4 prev_{}", constantName);
+                if (constantInfo->registerCount > 1)
+                    print("[{}]", constantInfo->registerCount.get());
+                println(" : packoffset(c{});", constantInfo->registerIndex.get() + 256);
+                if (constantInfo->registerCount > 1)
+                {
+                    uint32_t tailCount = 256 - constantInfo->registerIndex;
+                    println("#define prev_{0}(INDEX) select((INDEX) < {1}, prev_{0}[min(INDEX, {2})], 0.0)", constantName, tailCount, tailCount - 1);
+                }
+            }
+#endif
         }
     }
 
@@ -1490,7 +1522,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             }
         }
     }
-    if (isPixelShader)
+    if (isPixelShader && interpolantVariant != InterpolantVariant::Velocity)
         interpolantVariant = InterpolantVariant::Trimmed;
     auto declaresInterpolant = [&](size_t k)
     {
@@ -1504,6 +1536,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             return ((interpolantMask >> k) & 1u) != 0;
         }
     };
+    const bool velocity = interpolantVariant == InterpolantVariant::Velocity;
 #endif
 
     out += "#ifndef __spirv__\n";
@@ -1529,6 +1562,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             const auto& [usage, usageIndex] = INTERPOLATORS[k];
             println("\t[[vk::location({0})]] in float4 i{1}{2} : {3}{2},", k, USAGE_VARIABLES[uint32_t(usage)], usageIndex, USAGE_SEMANTICS[uint32_t(usage)]);
         }
+        if (velocity)
+        {
+            println("\t[[vk::location({})]] in float4 iVelCur : VELOCITY0,", std::size(INTERPOLATORS));
+            println("\t[[vk::location({})]] in float4 iVelPrev : VELOCITY1,", std::size(INTERPOLATORS) + 1);
+        }
 #else
         for (auto& [usage, usageIndex] : INTERPOLATORS)
             println("\tin float4 i{0}{1} : {2}{1},", USAGE_VARIABLES[uint32_t(usage)], usageIndex, USAGE_SEMANTICS[uint32_t(usage)]);
@@ -1551,6 +1589,10 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             out += ",\n\tout float4 oC3 : SV_Target3";
         if (pixelShader->outputs & PIXEL_SHADER_OUTPUT_DEPTH)
             out += ",\n\tout float oDepth : SV_Depth";
+#ifdef REEOT_RECOMP
+        if (velocity)
+            out += ",\n\tout float2 oVel : SV_Target1";
+#endif
     }
     else
     {
@@ -1614,6 +1656,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             const auto& [usage, usageIndex] = INTERPOLATORS[k];
             print(",\n\t[[vk::location({0})]] out float4 o{1}{2} : {3}{2}", k, USAGE_VARIABLES[uint32_t(usage)], usageIndex, USAGE_SEMANTICS[uint32_t(usage)]);
         }
+        if (velocity)
+        {
+            print(",\n\t[[vk::location({})]] out float4 oVelCur : VELOCITY0", std::size(INTERPOLATORS));
+            print(",\n\t[[vk::location({})]] out float4 oVelPrev : VELOCITY1", std::size(INTERPOLATORS) + 1);
+        }
 #else
         for (auto& [usage, usageIndex] : INTERPOLATORS)
             print(",\n\tout float4 o{0}{1} : {2}{1}", USAGE_VARIABLES[uint32_t(usage)], usageIndex, USAGE_SEMANTICS[uint32_t(usage)]);
@@ -1622,6 +1669,23 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
     out += ")\n";
     out += "{\n";
+
+#ifdef REEOT_RECOMP
+    if (velocity)
+    {
+        if (isPixelShader)
+        {
+            out += "\toVel = (iVelPrev.w > 1e-6) ? (iVelCur.xy / iVelCur.w - iVelPrev.xy / iVelPrev.w) * float2(0.5, -0.5) : float2(8.0, 8.0);\n";
+        }
+        else
+        {
+            out += "\toVelCur = 0.0;\n";
+            out += "\toVelPrev = 0.0;\n";
+            out += "\t[unroll] for (int velIter = 0; velIter < 2; velIter++)\n";
+            out += "\t{\n";
+        }
+    }
+#endif
 
 #ifdef UNLEASHED_RECOMP
     if (hasMtxProjection)
@@ -1722,6 +1786,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         if (!hasMtxProjection)
             out += "\toPos = 0.0;\n";
     #elif defined(REEOT_RECOMP)
+        if (velocity)
+            out += "\tif (velIter == 1) oVelPrev = oPos;\n";
         out += "\toPos = 0.0;\n";
     #endif
 
@@ -2346,6 +2412,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                     else
                 #endif
                     {
+                    #ifdef REEOT_RECOMP
+                        if (velocity && !isPixelShader)
+                            out += "continue;\n";
+                        else
+                    #endif
                         out += "return;\n";
                     }
                 }
@@ -2394,6 +2465,14 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
     if (!isPixelShader && hasMtxProjection)
         out += "\toPos.xy += g_HalfPixelOffset * oPos.w;\n";
+#endif
+
+#ifdef REEOT_RECOMP
+    if (velocity && !isPixelShader)
+    {
+        out += "\t}\n";
+        out += "\toVelCur = oPos;\n";
+    }
 #endif
 
     out += "}";
