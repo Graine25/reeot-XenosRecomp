@@ -76,9 +76,15 @@ struct ShaderRecompiler : StringBuffer
     // interpolant (for a PS reading one the VS never writes: the console left
     // it zero, and so does this); PositionOnly declares none, for draws
     // without a pixel shader (shadow casters, depth priming), where the
-    // compiler then drops the interpolant maths as well.
-    enum class InterpolantVariant : uint8_t { Trimmed, Full, PositionOnly };
+    // compiler then drops the interpolant maths as well. Velocity (VS and
+    // PS) is the motion-vector pair: the VS runs its body twice, the first
+    // pass reading a previous-frame copy of its float constant file placed
+    // 4 KB (c256) after the current one in the same buffer, and exports the
+    // two clip positions on VELOCITY0/1; the PS declares those inputs and
+    // writes their screen-space difference to SV_Target1.
+    enum class InterpolantVariant : uint8_t { Trimmed, Full, PositionOnly, Velocity };
     InterpolantVariant interpolantVariant = InterpolantVariant::Trimmed;
+    bool velocityVertexShader() const { return !isPixelShader && interpolantVariant == InterpolantVariant::Velocity; }
 #endif
 
 #ifdef UNLEASHED_RECOMP
