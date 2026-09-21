@@ -306,7 +306,12 @@ int main(int argc, char** argv)
                 thread_local DxcCompiler dxcCompiler;
 
 #ifdef XENOS_RECOMP_DXIL
+#ifdef REEOT_RECOMP
+                // The spec mask is a root constant (shader_common.h): a whole shader, never a library.
+                shader.dxil = dxcCompiler.compile(recompiler.out, recompiler.isPixelShader, false, false);
+#else
                 shader.dxil = dxcCompiler.compile(recompiler.out, recompiler.isPixelShader, recompiler.specConstantsMask != 0, false);
+#endif
                 if (shader.dxil == nullptr)
                 {
                     recordFailure("dxc-dxil-compile-failed");
@@ -384,7 +389,11 @@ int main(int argc, char** argv)
                             continue;
                         }
 #ifdef XENOS_RECOMP_DXIL
+#ifdef REEOT_RECOMP
+                        *v.dxil = dxcCompiler.compile(recompiler.out, isPixel, false, false);
+#else
                         *v.dxil = dxcCompiler.compile(recompiler.out, isPixel, shader.specConstantsMask != 0, false);
+#endif
                         if (*v.dxil == nullptr || *(reinterpret_cast<uint32_t*>((*v.dxil)->GetBufferPointer()) + 1) == 0)
                         {
                             variantFailure("dxc-dxil-compile-failed");

@@ -103,7 +103,19 @@ struct PushConstants
     float g_AlphaThreshold : packoffset(c17.x);
 #endif
 
+#ifdef REEOT_RECOMP
+// The spec mask is a root constant the runtime sets per draw (b4 of the
+// guest space, beside the two constant blocks and the shared block), so one
+// DXIL serves every value and no library is linked at run time. The
+// branches on it are uniform.
+cbuffer SpecConstants : register(b4, space4)
+{
+    uint g_SpecConstantsValue;
+};
+#define g_SpecConstants() g_SpecConstantsValue
+#else
 uint g_SpecConstants();
+#endif
 
 #endif
 
