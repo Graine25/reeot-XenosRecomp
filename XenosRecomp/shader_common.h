@@ -87,7 +87,15 @@ struct PushConstants
     float g_AlphaThreshold : packoffset(c17.x);
 #endif
 
+#ifdef REEOT_RECOMP
+cbuffer SpecConstants : register(b4, space4)
+{
+    uint g_SpecConstantsValue;
+};
+#define g_SpecConstants() g_SpecConstantsValue
+#else
 uint g_SpecConstants();
+#endif
 
 #endif
 
