@@ -56,6 +56,25 @@ struct ShaderRecompiler : StringBuffer
     enum class InterpolantVariant : uint8_t { Trimmed, Full, PositionOnly, Velocity };
     InterpolantVariant interpolantVariant = InterpolantVariant::Trimmed;
     bool velocityVertexShader() const { return !isPixelShader && interpolantVariant == InterpolantVariant::Velocity; }
+    struct VertexAluWrite
+    {
+        uint32_t vectorDest;
+        uint32_t vectorMask;
+        uint64_t vectorSources;
+        size_t dotOffset;
+        uint32_t scalarDest;
+        uint32_t scalarMask;
+        bool scalarOp;
+        bool scalarReadsPs;
+        uint64_t scalarSources;
+        bool conditional;
+        uint64_t positionSources;
+        bool positionReadsPs;
+    };
+    std::vector<VertexAluWrite> vertexAluWrites;
+    size_t registerDeclOffsets[32]{};
+    size_t psDeclOffset = 0;
+    bool straightLineFlow = true;
 #endif
 
 #ifdef UNLEASHED_RECOMP

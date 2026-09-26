@@ -358,6 +358,63 @@ float4 max4(float4 src0)
     return max(max(src0.x, src0.y), max(src0.z, src0.w));
 }
 
+void eotTwoSum(float a, float b, out float s, out float e)
+{
+    precise float sum = a + b;
+    precise float bv = sum - a;
+    precise float err = (a - (sum - bv)) + (b - bv);
+    s = sum;
+    e = err;
+}
+
+void eotTwoProduct(float a, float b, out float p, out float e)
+{
+    precise float ca = 4097.0 * a;
+    precise float ah = ca - (ca - a);
+    precise float al = a - ah;
+    precise float cb = 4097.0 * b;
+    precise float bh = cb - (cb - b);
+    precise float bl = b - bh;
+    precise float prod = a * b;
+    precise float err = ((ah * bh - prod) + ah * bl + al * bh) + al * bl;
+    p = prod;
+    e = err;
+}
+
+float dotF(float4 a, float4 b) { return dot(a, b); }
+float dotF(float3 a, float3 b) { return dot(a, b); }
+
+float dotP(float4 a, float4 b)
+{
+    float p, s, h, r, q;
+    eotTwoProduct(a.x, b.x, p, s);
+    eotTwoProduct(a.y, b.y, h, r);
+    eotTwoSum(p, h, p, q);
+    precise float s1 = s + (q + r);
+    eotTwoProduct(a.z, b.z, h, r);
+    eotTwoSum(p, h, p, q);
+    precise float s2 = s1 + (q + r);
+    eotTwoProduct(a.w, b.w, h, r);
+    eotTwoSum(p, h, p, q);
+    precise float s3 = s2 + (q + r);
+    precise float result = p + s3;
+    return isfinite(result) ? result : dot(a, b);
+}
+
+float dotP(float3 a, float3 b)
+{
+    float p, s, h, r, q;
+    eotTwoProduct(a.x, b.x, p, s);
+    eotTwoProduct(a.y, b.y, h, r);
+    eotTwoSum(p, h, p, q);
+    precise float s1 = s + (q + r);
+    eotTwoProduct(a.z, b.z, h, r);
+    eotTwoSum(p, h, p, q);
+    precise float s2 = s1 + (q + r);
+    precise float result = p + s2;
+    return isfinite(result) ? result : dot(a, b);
+}
+
 float2 getPixelCoord(uint resourceDescriptorIndex, float2 texCoord)
 {
     return getTexture2DDimensions(g_Texture2DDescriptorHeap[resourceDescriptorIndex]) * texCoord;
