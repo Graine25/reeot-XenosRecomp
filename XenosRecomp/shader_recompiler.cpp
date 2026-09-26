@@ -474,8 +474,53 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
     }
 }
 
+#ifdef REEOT_RECOMP
+// The temp registers an ALU instruction's vector operation reads (the operand
+// slots it does not use may still name registers, for the co-issued scalar op).
+static uint64_t vectorSourceTemps(const AluInstruction& instr)
+{
+    uint32_t operands;
+    switch (instr.vectorOpcode)
+    {
+    case AluVectorOpcode::Frc:
+    case AluVectorOpcode::Trunc:
+    case AluVectorOpcode::Floor:
+    case AluVectorOpcode::Max4:
+        operands = 1;
+        break;
+    case AluVectorOpcode::Mad:
+    case AluVectorOpcode::CndEq:
+    case AluVectorOpcode::CndGe:
+    case AluVectorOpcode::CndGt:
+    case AluVectorOpcode::Dp2Add:
+        operands = 3;
+        break;
+    default:
+        operands = 2;
+        break;
+    }
+
+    uint64_t temps = 0;
+    if (instr.src1Select)
+        temps |= 1ull << (instr.src1Register & 0x3F);
+    if (operands >= 2 && instr.src2Select)
+        temps |= 1ull << (instr.src2Register & 0x3F);
+    if (operands >= 3 && instr.src3Select)
+        temps |= 1ull << (instr.src3Register & 0x3F);
+    return temps;
+}
+#endif
+
 void ShaderRecompiler::recompile(const AluInstruction& instr)
 {
+#ifdef REEOT_RECOMP
+    VertexAluWrite vertexWrite{};
+    vertexWrite.dotOffset = SIZE_MAX;
+    // The body sits at one tab; deeper is a branch or a loop.
+    vertexWrite.conditional = instr.isPredicated || !straightLineFlow || indentation > 1;
+    bool vertexPositionExport = false;
+#endif
+
     if (instr.isPredicated)
     {
         indent();
@@ -756,6 +801,10 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
             case ExportRegister::VSPosition:
                 exportRegister = "oPos";
 
+            #ifdef REEOT_RECOMP
+                vertexPositionExport = true;
+            #endif
+
             #ifdef UNLEASHED_RECOMP
                 if (hasMtxProjection)
                 {
@@ -910,6 +959,24 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
 
         case AluVectorOpcode::Dp4:
         case AluVectorOpcode::Dp3:
+        #ifdef REEOT_RECOMP
+            if (!isPixelShader)
+            {
+                // Straight into oPos: precise now. Into a temp: recorded, and
+                // made precise at the end if the position is built from it.
+                if (exportRegister == "oPos")
+                {
+                    print("dotP({}, {})", op(VECTOR_0), op(VECTOR_1));
+                }
+                else
+                {
+                    if (!instr.exportData)
+                        vertexWrite.dotOffset = out.size();
+                    print("dotF({}, {})", op(VECTOR_0), op(VECTOR_1));
+                }
+                break;
+            }
+        #endif
             print("dot({}, {})", op(VECTOR_0), op(VECTOR_1));
             break;
 
@@ -957,6 +1024,19 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
             out += ')';
 
         out += ";\n";
+
+    #ifdef REEOT_RECOMP
+        if (!instr.exportData)
+        {
+            vertexWrite.vectorDest = instr.vectorDest & 0x3F;
+            vertexWrite.vectorMask = vectorWriteMask;
+            vertexWrite.vectorSources = vectorSourceTemps(instr);
+        }
+        else if (vertexPositionExport)
+        {
+            vertexWrite.positionSources = vectorSourceTemps(instr);
+        }
+    #endif
     }
 
     if (instr.scalarOpcode != AluScalarOpcode::RetainPrev)
@@ -1194,6 +1274,36 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
     if (instr.exportData)
         scalarWriteMask &= ~instr.vectorWriteMask;
 
+#ifdef REEOT_RECOMP
+    if (instr.scalarOpcode != AluScalarOpcode::RetainPrev)
+    {
+        vertexWrite.scalarOp = true;
+        vertexWrite.scalarReadsPs =
+            instr.scalarOpcode == AluScalarOpcode::AddsPrev || instr.scalarOpcode == AluScalarOpcode::SubsPrev ||
+            instr.scalarOpcode == AluScalarOpcode::MulsPrev || instr.scalarOpcode == AluScalarOpcode::MulsPrev2;
+        const bool constantScalar =
+            instr.scalarOpcode == AluScalarOpcode::Mulsc0 || instr.scalarOpcode == AluScalarOpcode::Mulsc1 ||
+            instr.scalarOpcode == AluScalarOpcode::Addsc0 || instr.scalarOpcode == AluScalarOpcode::Addsc1 ||
+            instr.scalarOpcode == AluScalarOpcode::Subsc0 || instr.scalarOpcode == AluScalarOpcode::Subsc1;
+        if (constantScalar)
+            vertexWrite.scalarSources = 1ull << (((uint32_t(instr.scalarOpcode) & 1) | (instr.src3Select << 1) | (instr.src3Swizzle & 0x3C)) & 0x3F);
+        else if (instr.src3Select)
+            vertexWrite.scalarSources = 1ull << (instr.src3Register & 0x3F);
+    }
+    if (scalarWriteMask != 0)
+    {
+        if (!instr.exportData)
+        {
+            vertexWrite.scalarDest = instr.scalarDest & 0x3F;
+            vertexWrite.scalarMask = scalarWriteMask;
+        }
+        else if (vertexPositionExport)
+        {
+            vertexWrite.positionReadsPs = true;
+        }
+    }
+#endif
+
     if (scalarWriteMask != 0)
     {
         indent();
@@ -1256,6 +1366,11 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
         indent();
         out += "}\n";
     }
+
+#ifdef REEOT_RECOMP
+    if (!isPixelShader)
+        vertexAluWrites.push_back(vertexWrite);
+#endif
 }
 
 void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_view& include)
@@ -1878,6 +1993,10 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     {
         if (!printedRegisters[i])
         {
+        #ifdef REEOT_RECOMP
+            if (!isPixelShader)
+                registerDeclOffsets[i] = out.size() + 1; // past the tab
+        #endif
             print("\tfloat4 r{} = ", i);
             if (isPixelShader && i == ((shader->fieldC >> 8) & 0xFF))
             {
@@ -1899,6 +2018,10 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     out += "\tint a0 = 0;\n";
     out += "\tint aL = 0;\n";
     out += "\tbool p0 = false;\n";
+#ifdef REEOT_RECOMP
+    if (!isPixelShader)
+        psDeclOffset = out.size() + 1; // past the tab
+#endif
     out += "\tfloat ps = 0.0;\n";
     out += "\tfloat4 vpre = 0.0;\n";
     if (isPixelShader)
@@ -2158,6 +2281,10 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         ifEndLabels.clear();
         elseLabels.clear();
     }
+
+#ifdef REEOT_RECOMP
+    straightLineFlow = simpleControlFlow;
+#endif
 
     if (simpleControlFlow)
     {
@@ -2582,6 +2709,92 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     {
         out += "\t}\n";
         out += "\toVelCur = oPos;\n";
+    }
+
+    // Everything the exported position is computed through. Walking back
+    // through the instructions from the export, each component the position
+    // needs is settled by the nearest write to it (one that may not run -- a
+    // predicated one, or one in a branch or a loop -- settles nothing), and
+    // that write's operands are needed in turn; ps is followed the same way.
+    // Writes after the export (the same temps reused for fog, say) are never
+    // looked at. The chain's dots become dotP, and the temps (and ps) its
+    // other arithmetic writes are declared precise, so no compiler fuses or
+    // reorders it differently from one shader to the next. Two shaders that
+    // build a position the same way (an object's depth pre-pass and its lit
+    // pass, a decal and the wall under it) then store the same depth, as they
+    // do on the console. Skinning, world and view-projection all count: next
+    // to the camera, where the stored depth changes fastest with position,
+    // one ulp of a world coordinate is hundreds of depth ulps.
+    if (!isPixelShader)
+    {
+        uint8_t needed[64]{};
+        bool psNeeded = false;
+        uint64_t preciseRegisters = 0;
+        bool precisePs = false;
+        auto need = [&](uint64_t temps)
+            {
+                for (uint32_t reg = 0; reg < 64; reg++)
+                {
+                    if ((temps >> reg) & 1)
+                        needed[reg] = 0xF;
+                }
+            };
+
+        for (auto write = vertexAluWrites.rbegin(); write != vertexAluWrites.rend(); ++write)
+        {
+            // Both halves read their operands before either writes, so every
+            // kill is decided before any operand is asked for.
+            const bool vectorHit = (needed[write->vectorDest] & write->vectorMask) != 0;
+            const bool scalarHit = (needed[write->scalarDest] & write->scalarMask) != 0;
+            if (!write->conditional)
+            {
+                if (vectorHit)
+                    needed[write->vectorDest] &= ~write->vectorMask;
+                if (scalarHit)
+                    needed[write->scalarDest] &= ~write->scalarMask;
+            }
+
+            // The temp and export writes from ps read this instruction's ps.
+            bool psRead = psNeeded || scalarHit || write->positionReadsPs;
+            if (write->scalarOp)
+            {
+                psNeeded = false;
+                if (psRead)
+                {
+                    if (write->conditional)
+                        psNeeded = true;
+                    precisePs = true;
+                    need(write->scalarSources);
+                    if (write->scalarReadsPs)
+                        psNeeded = true;
+                }
+            }
+            else
+            {
+                psNeeded = psRead;
+            }
+
+            if (vectorHit)
+            {
+                if (write->dotOffset != SIZE_MAX)
+                    out[write->dotOffset + 3] = 'P'; // dotF -> dotP
+                else
+                    preciseRegisters |= 1ull << write->vectorDest;
+                need(write->vectorSources);
+            }
+
+            need(write->positionSources);
+        }
+
+        // Last, from the back: the declarations sit before every recorded
+        // dot, and ps's after the temps'.
+        if (precisePs && psDeclOffset != 0)
+            out.insert(psDeclOffset, "precise ");
+        for (int32_t reg = 31; reg >= 0; reg--)
+        {
+            if (((preciseRegisters >> reg) & 1) && registerDeclOffsets[reg] != 0)
+                out.insert(registerDeclOffsets[reg], "precise ");
+        }
     }
 #endif
 

@@ -85,6 +85,35 @@ struct ShaderRecompiler : StringBuffer
     enum class InterpolantVariant : uint8_t { Trimmed, Full, PositionOnly, Velocity };
     InterpolantVariant interpolantVariant = InterpolantVariant::Trimmed;
     bool velocityVertexShader() const { return !isPixelShader && interpolantVariant == InterpolantVariant::Velocity; }
+    // Vertex shaders: every ALU instruction in program order -- the temps its
+    // vector and scalar halves write and read, whether its scalar half
+    // computes ps (and reads the previous ps), for a dp3/dp4 the offset of
+    // the "dotF" printed for it, and the temps its position export reads.
+    // The dots the position is computed from become dotP once the shader is
+    // printed (shader_common.h).
+    struct VertexAluWrite
+    {
+        uint32_t vectorDest;
+        uint32_t vectorMask;
+        uint64_t vectorSources;
+        size_t dotOffset; // SIZE_MAX when not a dot
+        uint32_t scalarDest;
+        uint32_t scalarMask; // a temp written from ps
+        bool scalarOp;       // computes ps
+        bool scalarReadsPs;  // ...from the previous ps
+        uint64_t scalarSources;
+        bool conditional;    // predicated, or inside a branch or a loop
+        uint64_t positionSources;
+        bool positionReadsPs;
+    };
+    std::vector<VertexAluWrite> vertexAluWrites;
+    // Where each temp's declaration was printed (0: not printed), and ps's, so
+    // the ones the position is computed through can be made precise afterwards.
+    size_t registerDeclOffsets[32]{};
+    size_t psDeclOffset = 0;
+    // False while printing a pc/switch program, where the order the
+    // instructions are printed in is not the order they run in.
+    bool straightLineFlow = true;
 #endif
 
 #ifdef UNLEASHED_RECOMP
