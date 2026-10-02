@@ -2,8 +2,55 @@
 #include "shader_recompiler.h"
 #include "dxc_compiler.h"
 
+#include <atomic>
 #include <mutex>
+#include <thread>
 #include <vector>
+
+#ifndef _MSC_VER
+#include <pthread.h>
+#endif
+
+// Runs fn over every element on all cores. std::execution::par_unseq is serial on libc++ 
+template<typename Container, typename Fn>
+static void parallelForEach(Container& container, Fn fn)
+{
+#ifdef _MSC_VER
+    std::for_each(std::execution::par_unseq, container.begin(), container.end(), fn);
+#else
+    using Iterator = typename Container::iterator;
+    struct Job
+    {
+        std::vector<Iterator> items;
+        std::atomic<size_t> next = 0;
+        Fn* fn;
+    };
+    Job job;
+    job.fn = &fn;
+    job.items.reserve(container.size());
+    for (auto it = container.begin(); it != container.end(); ++it)
+        job.items.push_back(it);
+
+    void* (*run)(void*) = [](void* arg) -> void*
+        {
+            auto& j = *static_cast<Job*>(arg);
+            for (size_t i; (i = j.next.fetch_add(1)) < j.items.size();)
+                (*j.fn)(*j.items[i]);
+            return nullptr;
+        };
+
+    // DXC recurses deeply; a secondary thread's default stack is 512 KB on macOS.
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 16 * 1024 * 1024);
+    std::vector<pthread_t> threads(std::max(1u, std::thread::hardware_concurrency()));
+    for (auto& thread : threads)
+        pthread_create(&thread, &attr, run, &job);
+    for (auto& thread : threads)
+        pthread_join(thread, nullptr);
+    pthread_attr_destroy(&attr);
+#endif
+}
 
 static std::unique_ptr<uint8_t[]> readAllBytes(const char* filePath, size_t& fileSize)
 {
@@ -191,7 +238,7 @@ int main(int argc, char** argv)
 
             std::atomic<uint32_t> dumped = 0;
             std::atomic<uint32_t> failed = 0;
-            std::for_each(std::execution::par_unseq, shaders.begin(), shaders.end(), [&](auto& hashShaderPair)
+            parallelForEach(shaders, [&](auto& hashShaderPair)
                 {
                     const XXH64_hash_t hash = hashShaderPair.first;
 
@@ -230,7 +277,7 @@ int main(int argc, char** argv)
 
             std::atomic<uint32_t> dumped = 0;
             std::atomic<uint32_t> failed = 0;
-            std::for_each(std::execution::par_unseq, shaders.begin(), shaders.end(), [&](auto& hashShaderPair)
+            parallelForEach(shaders, [&](auto& hashShaderPair)
                 {
                     const XXH64_hash_t hash = hashShaderPair.first;
 
@@ -280,7 +327,7 @@ int main(int argc, char** argv)
 
         std::atomic<uint32_t> progress = 0;
 
-        std::for_each(std::execution::par_unseq, shaders.begin(), shaders.end(), [&](auto& hashShaderPair)
+        parallelForEach(shaders, [&](auto& hashShaderPair)
             {
                 auto& shader = hashShaderPair.second;
                 const XXH64_hash_t hash = hashShaderPair.first;
