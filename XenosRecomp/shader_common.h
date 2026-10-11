@@ -329,19 +329,24 @@ float4 tfetchR11G11B10(uint dec3Mask, float4 value, uint slotCode)
 {
     if (g_SpecConstants() & SPEC_CONSTANT_R11G11B10_NORMAL)
     {
-        // w = 1.0: the Xenos vfetch of a 3-component packed format fills the
-        // missing lane with one, and the game's skinned VS depends on it --
-        // the tangent is skinned with 4-component dots (w picks up the bone
-        // translation row) and the binormal is cross(t, n) * t.w. Returning 0
-        // here skinned every character's tangent without translation and
-        // zeroed the binormal outright: broken TBN -> wrong G-buffer normals
-        // -> every deferred light shades characters wrong (the grey-cyan hue
-        // plus the missing warm fill on the title screen).
+        // The game's VS reads w: the tangent is skinned with 4-component dots
+        // (w picks up the bone translation row) and the binormal is
+        // cross(t, n) * t.w. Returning 0 here skinned every character's
+        // tangent without translation and zeroed the binormal outright.
+        //
+        // 2_10_10_10 is a four-component format: w is the 2-bit signed lane
+        // in bits 30-31, and EOT keeps the tangent's handedness there, +1 or
+        // -1, never 0 -- about half of every normal-mapped mesh is -1 (the
+        // vent beams 787/787, Spider-Man 2125/2162). A fixed 1.0 flipped the
+        // binormal on all of those, mirroring their normal maps: the vent's
+        // beam faces turned away from the spotlight and lit black where
+        // Xenia lights them white. 11:11:10 is three components; the vfetch
+        // fills its missing w with one.
         uint v = asuint(value.x);
         if (dec3Mask & (1u << slotCode))
         {
-            int3 s = int3(v << 22, v << 12, v << 2) >> 22;
-            return float4(max(float3(s) / 511.0, -1.0), 1.0);
+            int4 s = int4(v << 22, v << 12, v << 2, v) >> int4(22, 22, 22, 30);
+            return max(float4(s) / float4(511.0, 511.0, 511.0, 1.0), -1.0);
         }
         return float4(
             (v & 0x00000400 ? -1.0 : 0.0) + ((v & 0x3FF) / 1024.0),
