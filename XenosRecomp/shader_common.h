@@ -285,8 +285,8 @@ float4 tfetchR11G11B10(uint dec3Mask, float4 value, uint slotCode)
         uint v = asuint(value.x);
         if (dec3Mask & (1u << slotCode))
         {
-            int3 s = int3(v << 22, v << 12, v << 2) >> 22;
-            return float4(max(float3(s) / 511.0, -1.0), 1.0);
+            int4 s = int4(v << 22, v << 12, v << 2, v) >> int4(22, 22, 22, 30);
+            return max(float4(s) / float4(511.0, 511.0, 511.0, 1.0), -1.0);
         }
         return float4(
             (v & 0x00000400 ? -1.0 : 0.0) + ((v & 0x3FF) / 1024.0),
