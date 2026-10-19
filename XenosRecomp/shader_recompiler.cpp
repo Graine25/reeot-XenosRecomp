@@ -395,7 +395,8 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
         // Route the sample through the per-slot TextureSign hook so the
         // runtime can request the kUnsignedBiased (2c-1) fetch transform the
         // console applies in hardware (see shader_common.h g_BiasedTextures).
-        out += "applyFetchSign(tfetch";
+        fetchSlotMask |= 1u << (instr.constIndex & 31u);
+        out += fastPixel ? "applyFetchSignFast(tfetch" : "applyFetchSign(tfetch";
     #else
         out += "tfetch";
     #endif
@@ -2570,18 +2571,24 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             {
                 if (isPixelShader)
                 {
-                    specConstantsMask |= SPEC_CONSTANT_ALPHA_TEST;
+                    // The fast twin is drawn only where alpha test is off, so it
+                    // leaves the kill out; with no clip() in the shader the driver
+                    // can keep early depth and stencil.
+                    if (!fastPixel)
+                    {
+                        specConstantsMask |= SPEC_CONSTANT_ALPHA_TEST;
 
-                    indent();
-                    out += "[branch] if (g_SpecConstants() & SPEC_CONSTANT_ALPHA_TEST)";
-                    indent();
-                    out += '{';
+                        indent();
+                        out += "[branch] if (g_SpecConstants() & SPEC_CONSTANT_ALPHA_TEST)";
+                        indent();
+                        out += '{';
 
-                    indent();
-                    out += "\tclip(oC0.w - g_AlphaThreshold);\n";
+                        indent();
+                        out += "\tclip(oC0.w - g_AlphaThreshold);\n";
 
-                    indent();
-                    out += "}";
+                        indent();
+                        out += "}";
+                    }
 
                 #ifdef UNLEASHED_RECOMP
                     specConstantsMask |= SPEC_CONSTANT_ALPHA_TO_COVERAGE;

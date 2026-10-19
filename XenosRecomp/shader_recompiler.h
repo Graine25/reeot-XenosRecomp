@@ -84,6 +84,12 @@ struct ShaderRecompiler : StringBuffer
     // writes their screen-space difference to SV_Target1.
     enum class InterpolantVariant : uint8_t { Trimmed, Full, PositionOnly, Velocity };
     InterpolantVariant interpolantVariant = InterpolantVariant::Trimmed;
+    // Pixel shaders: the fast twin, emitted without the gamma decode in the
+    // fetch hook and without the alpha-test epilogue (shader_common.h
+    // applyFetchSignFast). The runtime draws with it only when neither can run.
+    bool fastPixel = false;
+    // The texture fetch constants the shader samples, one bit per slot.
+    uint32_t fetchSlotMask = 0;
     bool velocityVertexShader() const { return !isPixelShader && interpolantVariant == InterpolantVariant::Velocity; }
     // Vertex shaders: every ALU instruction in program order -- the temps its
     // vector and scalar halves write and read, whether its scalar half

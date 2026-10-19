@@ -209,6 +209,19 @@ float4 applyFetchSign(float4 value, uint biasedMask, uint alphaMask, uint slotIn
                            pwlGammaToLinear1(value.b));
     return value;
 }
+
+// The fast twin's hook: the two sign selects without the gamma decode. The
+// runtime picks the twin only for a draw whose fetched slots carry no gamma
+// bit, where the decode branch above is never taken; without it the driver
+// can issue a shader's fetches back to back instead of one per branch.
+float4 applyFetchSignFast(float4 value, uint biasedMask, uint alphaMask, uint slotIndex)
+{
+    if (biasedMask & (1u << slotIndex))
+        value.rgb = value.rgb * 2.0 - 1.0;
+    if (alphaMask & (1u << (16u + slotIndex)))
+        value.a = value.a * 2.0 - 1.0;
+    return value;
+}
 #endif
 
 float4 tfetch1D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float texCoord)
