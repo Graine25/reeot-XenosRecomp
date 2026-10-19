@@ -544,6 +544,10 @@ int main(int argc, char** argv)
         std::vector<uint8_t> dxilCompressed(ZSTD_compressBound(dxil.size()));
         dxilCompressed.resize(ZSTD_compress(dxilCompressed.data(), dxilCompressed.size(), dxil.data(), dxil.size(), level));
 
+        // A build reads one of the two blobs: the other is left out of its
+        // compile (SHADER_CACHE_NO_DXIL / SHADER_CACHE_NO_SPIRV), where it
+        // only cost the compiler's memory and the binary's size.
+        f.println("#ifndef SHADER_CACHE_NO_DXIL");
         f.print("const uint8_t g_compressedDxilCache[] = {{");
 
         for (auto data : dxilCompressed)
@@ -552,6 +556,11 @@ int main(int argc, char** argv)
         f.println("}};");
         f.println("const size_t g_dxilCacheCompressedSize = {};", dxilCompressed.size());
         f.println("const size_t g_dxilCacheDecompressedSize = {};", dxil.size());
+        f.println("#else");
+        f.println("const uint8_t g_compressedDxilCache[1] = {{0}};");
+        f.println("const size_t g_dxilCacheCompressedSize = 0;");
+        f.println("const size_t g_dxilCacheDecompressedSize = 0;");
+        f.println("#endif");
 #endif
 
         fmt::println("Compressing SPIRV cache...");
@@ -559,6 +568,7 @@ int main(int argc, char** argv)
         std::vector<uint8_t> spirvCompressed(ZSTD_compressBound(spirv.size()));
         spirvCompressed.resize(ZSTD_compress(spirvCompressed.data(), spirvCompressed.size(), spirv.data(), spirv.size(), level));
 
+        f.println("#ifndef SHADER_CACHE_NO_SPIRV");
         f.print("const uint8_t g_compressedSpirvCache[] = {{");
 
         for (auto data : spirvCompressed)
@@ -568,6 +578,11 @@ int main(int argc, char** argv)
 
         f.println("const size_t g_spirvCacheCompressedSize = {};", spirvCompressed.size());
         f.println("const size_t g_spirvCacheDecompressedSize = {};", spirv.size());
+        f.println("#else");
+        f.println("const uint8_t g_compressedSpirvCache[1] = {{0}};");
+        f.println("const size_t g_spirvCacheCompressedSize = 0;");
+        f.println("const size_t g_spirvCacheDecompressedSize = 0;");
+        f.println("#endif");
         f.println("const size_t g_shaderCacheEntryCount = {};", shaders.size());
 
         writeAllBytes(output, f.out.data(), f.out.size());
