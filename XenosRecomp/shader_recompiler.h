@@ -90,6 +90,10 @@ struct ShaderRecompiler : StringBuffer
     bool fastPixel = false;
     // The texture fetch constants the shader samples, one bit per slot.
     uint32_t fetchSlotMask = 0;
+    // A light pre-pass light shader: it samples the G-buffer as NormalTexture
+    // or normalTexObj, through specularAAFetch, and its epilogue scales the
+    // specular output (shader_common.h, eot_specular_aa).
+    bool specularAA = false;
     bool velocityVertexShader() const { return !isPixelShader && interpolantVariant == InterpolantVariant::Velocity; }
     // Vertex shaders: every ALU instruction in program order -- the temps its
     // vector and scalar halves write and read, whether its scalar half

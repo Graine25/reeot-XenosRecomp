@@ -3,6 +3,7 @@
 
 #define SPEC_CONSTANT_R11G11B10_NORMAL  (1 << 0)
 #define SPEC_CONSTANT_ALPHA_TEST        (1 << 1)
+#define SPEC_CONSTANT_SPECULAR_AA       (1 << 5)
 
 #ifdef UNLEASHED_RECOMP
     #define SPEC_CONSTANT_BICUBIC_GI_FILTER (1 << 2)
@@ -208,6 +209,40 @@ float4 applyFetchSign(float4 value, uint biasedMask, uint alphaMask, uint slotIn
         value.rgb = float3(pwlGammaToLinear1(value.r), pwlGammaToLinear1(value.g),
                            pwlGammaToLinear1(value.b));
     return value;
+}
+
+// Specular anti-aliasing for the light pre-pass (eot_specular_aa). The nine
+// light shaders read the resolved G-buffer through this hook: xyz the view
+// normal (sign-biased already), w the Blinn-Phong power / 127, which they
+// raise N.H to without normalization and write as the light buffer's alpha.
+// The resolve averages the multisampled normals and nothing renormalizes
+// them, so an edge pixel's normal is short and (|N| cos)^power all but kills
+// its highlight, differently each frame as the coverage moves; and a dense
+// normal map under a tight lobe gives neighbouring pixels unrelated
+// highlights. Here the normal is renormalized, the lost length widens the
+// lobe (Toksvig: p' = r p / (r + p (1 - r))), the normal's screen-space
+// variance widens it again (Tokuyoshi & Kaplanyan, JCGT 2021 eq. 14 with
+// sigma^2 = 1/(2 pi) and kappa = 0.18, on the Beckmann alpha^2 = 2 / (p + 2)
+// of the power), and the epilogue scales the shader's specular output by
+// (p'' + 1) / (p + 1) (Toksvig eq. 8) so the wider lobe carries the energy of
+// the narrow one instead of brightening.
+static float g_specularAAEnergy = 1.0;
+float4 specularAAFetch(float4 value)
+{
+    [branch] if (!(g_SpecConstants() & SPEC_CONSTANT_SPECULAR_AA))
+        return value;
+    const float len = length(value.xyz);
+    const float3 n = value.xyz * (len > 1e-4 ? rcp(len) : 0.0);
+    const float r = saturate(len);
+    const float power = max(value.w * 127.0, 0.0);
+    const float toksvig = r * power / max(r + power * (1.0 - r), 1e-4);
+    const float3 dndx = ddx(n);
+    const float3 dndy = ddy(n);
+    const float kernel = min(0.15915494 * (dot(dndx, dndx) + dot(dndy, dndy)), 0.18);
+    const float alpha2 = min(2.0 / (toksvig + 2.0) + kernel, 1.0);
+    const float filtered = max(2.0 / alpha2 - 2.0, 0.0);
+    g_specularAAEnergy = (filtered + 1.0) / (power + 1.0);
+    return float4(n, filtered / 127.0);
 }
 
 // The fast twin's hook: the two sign selects without the gamma decode. The

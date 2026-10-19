@@ -348,6 +348,7 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
 
     std::string constName;
     const char* constNamePtr = nullptr;
+    bool gbufferFetch = false;
 #ifdef UNLEASHED_RECOMP
     bool subtractFromOne = false;
 #endif
@@ -396,6 +397,16 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
         // runtime can request the kUnsignedBiased (2c-1) fetch transform the
         // console applies in hardware (see shader_common.h g_BiasedTextures).
         fetchSlotMask |= 1u << (instr.constIndex & 31u);
+        // The light shaders' G-buffer fetch goes through the specular AA hook
+        // too; no other shader samples a texture by these names.
+        if (isPixelShader && instr.dimension == TextureDimension::Texture2D && constNamePtr &&
+            (strcmp(constNamePtr, "NormalTexture") == 0 || strcmp(constNamePtr, "normalTexObj") == 0))
+        {
+            specularAA = true;
+            specConstantsMask |= SPEC_CONSTANT_SPECULAR_AA;
+            out += "specularAAFetch(";
+            gbufferFetch = true;
+        }
         out += fastPixel ? "applyFetchSignFast(tfetch" : "applyFetchSign(tfetch";
     #else
         out += "tfetch";
@@ -454,7 +465,7 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
 
 #ifdef REEOT_RECOMP
     if (instr.opcode == FetchOpcode::TextureFetch)
-        print("), g_BiasedTextures, g_SintTexcoords, {}).", instr.constIndex);
+        print("), g_BiasedTextures, g_SintTexcoords, {}){}.", instr.constIndex, gbufferFetch ? ")" : "");
     else
         out += ").";
 #else
@@ -2588,6 +2599,14 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
                         indent();
                         out += "}";
+                    }
+
+                    // After the alpha test (which tests the console's value):
+                    // the specular output carries the widened lobe's energy.
+                    if (specularAA)
+                    {
+                        indent();
+                        out += "[branch] if (g_SpecConstants() & SPEC_CONSTANT_SPECULAR_AA) oC0.w *= g_specularAAEnergy;\n";
                     }
 
                 #ifdef UNLEASHED_RECOMP
