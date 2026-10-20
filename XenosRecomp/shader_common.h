@@ -3,6 +3,7 @@
 
 #define SPEC_CONSTANT_R11G11B10_NORMAL  (1 << 0)
 #define SPEC_CONSTANT_ALPHA_TEST        (1 << 1)
+#define SPEC_CONSTANT_SPECULAR_AA       (1 << 5)
 
 #ifdef UNLEASHED_RECOMP
     #define SPEC_CONSTANT_BICUBIC_GI_FILTER (1 << 2)
@@ -168,6 +169,38 @@ float4 applyFetchSign(float4 value, uint biasedMask, uint alphaMask, uint slotIn
     if (biasedMask & (1u << (16u + slotIndex)))
         value.rgb = float3(pwlGammaToLinear1(value.r), pwlGammaToLinear1(value.g),
                            pwlGammaToLinear1(value.b));
+    return value;
+}
+
+// Specular AA for the light pre-pass (eot_specular_aa): the resolved normal renormalized, the
+// lobe widened by its lost length (Toksvig) and its screen-space variance (Tokuyoshi and
+// Kaplanyan 2021), and the epilogue keeps the narrow lobe's energy.
+static float g_specularAAEnergy = 1.0;
+float4 specularAAFetch(float4 value)
+{
+    [branch] if (!(g_SpecConstants() & SPEC_CONSTANT_SPECULAR_AA))
+        return value;
+    const float len = length(value.xyz);
+    const float3 n = value.xyz * (len > 1e-4 ? rcp(len) : 0.0);
+    const float r = saturate(len);
+    const float power = max(value.w * 127.0, 0.0);
+    const float toksvig = r * power / max(r + power * (1.0 - r), 1e-4);
+    const float3 dndx = ddx(n);
+    const float3 dndy = ddy(n);
+    const float kernel = min(0.15915494 * (dot(dndx, dndx) + dot(dndy, dndy)), 0.18);
+    const float alpha2 = min(2.0 / (toksvig + 2.0) + kernel, 1.0);
+    const float filtered = max(2.0 / alpha2 - 2.0, 0.0);
+    g_specularAAEnergy = (filtered + 1.0) / (power + 1.0);
+    return float4(n, filtered / 127.0);
+}
+
+// The fast twin's hook: the sign selects without the gamma decode.
+float4 applyFetchSignFast(float4 value, uint biasedMask, uint alphaMask, uint slotIndex)
+{
+    if (biasedMask & (1u << slotIndex))
+        value.rgb = value.rgb * 2.0 - 1.0;
+    if (alphaMask & (1u << (16u + slotIndex)))
+        value.a = value.a * 2.0 - 1.0;
     return value;
 }
 #endif

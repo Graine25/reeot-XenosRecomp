@@ -55,6 +55,9 @@ struct ShaderRecompiler : StringBuffer
     uint32_t interpolantMask = 0;
     enum class InterpolantVariant : uint8_t { Trimmed, Full, PositionOnly, Velocity };
     InterpolantVariant interpolantVariant = InterpolantVariant::Trimmed;
+    bool fastPixel = false;
+    uint32_t fetchSlotMask = 0;
+    bool specularAA = false;
     bool velocityVertexShader() const { return !isPixelShader && interpolantVariant == InterpolantVariant::Velocity; }
     struct VertexAluWrite
     {

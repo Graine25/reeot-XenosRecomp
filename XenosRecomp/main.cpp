@@ -88,6 +88,11 @@ struct RecompiledShader
     std::vector<uint8_t> posSpirv;
     IDxcBlob* velDxil = nullptr;
     std::vector<uint8_t> velSpirv;
+    IDxcBlob* fastDxil = nullptr;
+    std::vector<uint8_t> fastSpirv;
+    IDxcBlob* fastVelDxil = nullptr;
+    std::vector<uint8_t> fastVelSpirv;
+    uint32_t fetchSlotMask = 0;
 #endif
 };
 
@@ -324,6 +329,7 @@ int main(int argc, char** argv)
                 shader.vertexLayout = recompiler.vertexLayout;
                 shader.vfetchCodeOffset = recompiler.physicalCodeOffset;
                 shader.usesFloatConstants = recompiler.usesFloatConstants ? 1 : 0;
+                shader.fetchSlotMask = recompiler.fetchSlotMask;
 #endif
 
                 thread_local DxcCompiler dxcCompiler;
@@ -371,6 +377,7 @@ int main(int argc, char** argv)
                         IDxcBlob** dxil;
                         std::vector<uint8_t>* spirv;
                         const char* name;
+                        bool fast = false;
                     };
                     const bool isPixel = recompiler.isPixelShader;
                     const Variant vertexVariants[] = {
@@ -381,9 +388,11 @@ int main(int argc, char** argv)
                     const size_t vertexCount = shader.usesFloatConstants ? 3 : 2;
                     const Variant pixelVariants[] = {
                         { ShaderRecompiler::InterpolantVariant::Velocity, &shader.velDxil, &shader.velSpirv, "velocity" },
+                        { ShaderRecompiler::InterpolantVariant::Trimmed, &shader.fastDxil, &shader.fastSpirv, "fast", true },
+                        { ShaderRecompiler::InterpolantVariant::Velocity, &shader.fastVelDxil, &shader.fastVelSpirv, "fast velocity", true },
                     };
                     const Variant* variants = isPixel ? pixelVariants : vertexVariants;
-                    const size_t variantCount = isPixel ? 1 : vertexCount;
+                    const size_t variantCount = isPixel ? 3 : vertexCount;
                     for (size_t vi = 0; vi < variantCount; vi++)
                     {
                         const Variant& v = variants[vi];
@@ -400,8 +409,12 @@ int main(int argc, char** argv)
                         };
                         recompiler = {};
                         recompiler.interpolantVariant = v.kind;
+                        recompiler.fastPixel = v.fast;
                         recompiler.recompile(shader.data, include);
-                        if (recompiler.specConstantsMask != shader.specConstantsMask ||
+                        // The fast twin drops the alpha test and its spec bit.
+                        constexpr uint32_t kAlphaTestBit = 1u << 1;
+                        const uint32_t droppedBits = v.fast ? (shader.specConstantsMask & kAlphaTestBit) : 0u;
+                        if ((recompiler.specConstantsMask | droppedBits) != shader.specConstantsMask ||
                             recompiler.interpolantMask != shader.interpolantMask)
                         {
                             variantFailure("recompiled differently");
@@ -486,17 +499,21 @@ int main(int argc, char** argv)
                 slot[3] = sp.size();
                 spirv.insert(spirv.end(), sp.begin(), sp.end());
             };
-            size_t primary[4], full[4], pos[4], vel[4];
+            size_t primary[4], full[4], pos[4], vel[4], fast[4], fastVel[4];
             append(shader.dxil, shader.spirv, primary);
             append(shader.fullDxil, shader.fullSpirv, full);
             append(shader.posDxil, shader.posSpirv, pos);
             append(shader.velDxil, shader.velSpirv, vel);
-            f.println("\t{{ 0x{:X}, {}, {}, {}, {}, {}, {}, {}, {}, {}, 0x{:X}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {} }},",
+            append(shader.fastDxil, shader.fastSpirv, fast);
+            append(shader.fastVelDxil, shader.fastVelSpirv, fastVel);
+            f.println("\t{{ 0x{:X}, {}, {}, {}, {}, {}, {}, {}, {}, {}, 0x{:X}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, 0x{:X} }},",
                 hash, primary[0], primary[1], primary[2], primary[3], shader.specConstantsMask,
                 vertexLayouts.size(), shader.vertexLayout.size(), shader.vfetchCodeOffset,
                 shader.usesFloatConstants, shader.interpolantMask,
                 full[0], full[1], full[2], full[3], pos[0], pos[1], pos[2], pos[3],
-                vel[0], vel[1], vel[2], vel[3]);
+                vel[0], vel[1], vel[2], vel[3],
+                fast[0], fast[1], fast[2], fast[3], fastVel[0], fastVel[1], fastVel[2], fastVel[3],
+                shader.fetchSlotMask);
             for (const VertexFetchLayoutRecord& r : shader.vertexLayout)
             {
                 vertexLayouts.push_back(r.w0);
@@ -537,6 +554,8 @@ int main(int argc, char** argv)
         std::vector<uint8_t> dxilCompressed(ZSTD_compressBound(dxil.size()));
         dxilCompressed.resize(ZSTD_compress(dxilCompressed.data(), dxilCompressed.size(), dxil.data(), dxil.size(), level));
 
+        // A build reads one of the two blobs; the other stays out of its compile.
+        f.println("#ifndef SHADER_CACHE_NO_DXIL");
         f.print("const uint8_t g_compressedDxilCache[] = {{");
 
         for (auto data : dxilCompressed)
@@ -545,6 +564,11 @@ int main(int argc, char** argv)
         f.println("}};");
         f.println("const size_t g_dxilCacheCompressedSize = {};", dxilCompressed.size());
         f.println("const size_t g_dxilCacheDecompressedSize = {};", dxil.size());
+        f.println("#else");
+        f.println("const uint8_t g_compressedDxilCache[1] = {{0}};");
+        f.println("const size_t g_dxilCacheCompressedSize = 0;");
+        f.println("const size_t g_dxilCacheDecompressedSize = 0;");
+        f.println("#endif");
 #endif
 
         fmt::println("Compressing SPIRV cache...");
@@ -552,6 +576,7 @@ int main(int argc, char** argv)
         std::vector<uint8_t> spirvCompressed(ZSTD_compressBound(spirv.size()));
         spirvCompressed.resize(ZSTD_compress(spirvCompressed.data(), spirvCompressed.size(), spirv.data(), spirv.size(), level));
 
+        f.println("#ifndef SHADER_CACHE_NO_SPIRV");
         f.print("const uint8_t g_compressedSpirvCache[] = {{");
 
         for (auto data : spirvCompressed)
@@ -561,6 +586,11 @@ int main(int argc, char** argv)
 
         f.println("const size_t g_spirvCacheCompressedSize = {};", spirvCompressed.size());
         f.println("const size_t g_spirvCacheDecompressedSize = {};", spirv.size());
+        f.println("#else");
+        f.println("const uint8_t g_compressedSpirvCache[1] = {{0}};");
+        f.println("const size_t g_spirvCacheCompressedSize = 0;");
+        f.println("const size_t g_spirvCacheDecompressedSize = 0;");
+        f.println("#endif");
         f.println("const size_t g_shaderCacheEntryCount = {};", shaders.size());
 
         writeAllBytes(output, f.out.data(), f.out.size());

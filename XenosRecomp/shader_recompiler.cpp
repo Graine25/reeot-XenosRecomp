@@ -334,6 +334,7 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
 
     std::string constName;
     const char* constNamePtr = nullptr;
+    bool gbufferFetch = false;
 #ifdef UNLEASHED_RECOMP
     bool subtractFromOne = false;
 #endif
@@ -378,7 +379,17 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
     #endif
 
     #ifdef REEOT_RECOMP
-        out += "applyFetchSign(tfetch";
+        fetchSlotMask |= 1u << (instr.constIndex & 31u);
+        // The light shaders sample the G-buffer by these names; nothing else does.
+        if (isPixelShader && instr.dimension == TextureDimension::Texture2D && constNamePtr &&
+            (strcmp(constNamePtr, "NormalTexture") == 0 || strcmp(constNamePtr, "normalTexObj") == 0))
+        {
+            specularAA = true;
+            specConstantsMask |= SPEC_CONSTANT_SPECULAR_AA;
+            out += "specularAAFetch(";
+            gbufferFetch = true;
+        }
+        out += fastPixel ? "applyFetchSignFast(tfetch" : "applyFetchSign(tfetch";
     #else
         out += "tfetch";
     #endif
@@ -436,7 +447,7 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
 
 #ifdef REEOT_RECOMP
     if (instr.opcode == FetchOpcode::TextureFetch)
-        print("), g_BiasedTextures, g_SintTexcoords, {}).", instr.constIndex);
+        print("), g_BiasedTextures, g_SintTexcoords, {}){}.", instr.constIndex, gbufferFetch ? ")" : "");
     else
         out += ").";
 #else
@@ -2473,18 +2484,28 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             {
                 if (isPixelShader)
                 {
-                    specConstantsMask |= SPEC_CONSTANT_ALPHA_TEST;
+                    // The fast twin draws only where alpha test is off: no clip(), so early depth stays.
+                    if (!fastPixel)
+                    {
+                        specConstantsMask |= SPEC_CONSTANT_ALPHA_TEST;
 
-                    indent();
-                    out += "[branch] if (g_SpecConstants() & SPEC_CONSTANT_ALPHA_TEST)";
-                    indent();
-                    out += '{';
+                        indent();
+                        out += "[branch] if (g_SpecConstants() & SPEC_CONSTANT_ALPHA_TEST)";
+                        indent();
+                        out += '{';
 
-                    indent();
-                    out += "\tclip(oC0.w - g_AlphaThreshold);\n";
+                        indent();
+                        out += "\tclip(oC0.w - g_AlphaThreshold);\n";
 
-                    indent();
-                    out += "}";
+                        indent();
+                        out += "}";
+                    }
+
+                    if (specularAA)
+                    {
+                        indent();
+                        out += "[branch] if (g_SpecConstants() & SPEC_CONSTANT_SPECULAR_AA) oC0.w *= g_specularAAEnergy;\n";
+                    }
 
                 #ifdef UNLEASHED_RECOMP
                     specConstantsMask |= SPEC_CONSTANT_ALPHA_TO_COVERAGE;
