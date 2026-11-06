@@ -10,7 +10,13 @@
 #include <bit>
 #include <cassert>
 #include <cstdint>
-#include <execution>
+#include <atomic>
+#include <cstring>
+#include <cstdio>
+#include <memory>
+#include <stdexcept>
+#include <string_view>
+#include <thread>
 #include <filesystem>
 #include <functional>
 #include <map>

@@ -1,3 +1,4 @@
+// NGII paths adapted from YaibaKamikaze/IzunaRecomp, fork fb51ac62 (MIT).
 #pragma once
 
 #include "shader.h"
@@ -21,8 +22,20 @@ struct StringBuffer
     }
 };
 
+// Instruction address in 12-byte units, followed by the mini-fetch flag.
+struct VertexFetchLayoutRecord
+{
+    uint32_t w0;
+    uint32_t w1;
+};
+
 struct ShaderRecompiler : StringBuffer
 {
+    std::string fetchIndex;
+    uint64_t unsupportedExports = 0; // Bit per export register without a destination.
+    std::unordered_set<uint32_t> literalConstants;
+    bool usesMemExport = false;
+
     uint32_t indentation = 0;
     bool isPixelShader = false;
     const uint8_t* constantTableData = nullptr;
@@ -30,23 +43,48 @@ struct ShaderRecompiler : StringBuffer
     std::unordered_map<uint32_t, std::string> interpolators;
     std::unordered_map<uint32_t, const ConstantInfo*> float4Constants;
     std::unordered_map<uint32_t, const char*> boolConstants;
+    std::unordered_map<uint32_t, const char*> int4Constants;
     std::unordered_map<uint32_t, const char*> samplers;
     std::unordered_map<uint32_t, uint32_t> ifEndLabels;
-    // Structured if/else emission: instruction indices where a "} else {" is
-    // emitted (then-branch close is part of the event, not ifEndLabels).
     std::unordered_set<uint32_t> elseLabels;
     uint32_t specConstantsMask = 0;
+    bool coverageOutput = false;
 
-#ifdef UNLEASHED_RECOMP
-    bool hasMtxProjection = false;
-    bool hasMtxPrevInvViewProjection = false;
-#endif
-
-#ifdef REBLUE_RECOMP
-    bool hasShadowTexture = false;
-    uint32_t shadowTapUVCount = 0;
-    std::unordered_map<uint32_t, uint32_t> shadowTapSlots;
-#endif
+    std::vector<VertexFetchLayoutRecord> vertexLayout;
+    uint32_t physicalCodeOffset = 0;
+    bool usesFloatConstants = false;
+    uint32_t interpolantMask = 0;
+    uint32_t floatConstantRegs = 0; // Upload bound; relative reads need all 256 registers.
+    uint32_t textureSlotMask = 0;
+    // Requirements from fetch instructions; a slot can appear in conflicting masks.
+    uint32_t pointSlotMask = 0;
+    uint32_t linearSlotMask = 0;
+    uint32_t mipPointSlotMask = 0;
+    uint32_t mipLinearSlotMask = 0;
+    uint32_t mipBaseSlotMask = 0;
+    uint32_t anisoOffSlotMask = 0;
+    enum class InterpolantVariant : uint8_t { Trimmed, Full, PositionOnly, Velocity };
+    InterpolantVariant interpolantVariant = InterpolantVariant::Trimmed;
+    bool velocityVertexShader() const { return !isPixelShader && interpolantVariant == InterpolantVariant::Velocity; }
+    struct VertexAluWrite
+    {
+        uint32_t vectorDest;
+        uint32_t vectorMask;
+        uint64_t vectorSources;
+        size_t dotOffset;
+        uint32_t scalarDest;
+        uint32_t scalarMask;
+        bool scalarOp;
+        bool scalarReadsPs;
+        uint64_t scalarSources;
+        bool conditional;
+        uint64_t positionSources;
+        bool positionReadsPs;
+    };
+    std::vector<VertexAluWrite> vertexAluWrites;
+    size_t registerDeclOffsets[32]{};
+    size_t psDeclOffset = 0;
+    bool straightLineFlow = true;
 
     void indent()
     {

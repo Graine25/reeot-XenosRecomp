@@ -6,6 +6,8 @@ struct DxcCompiler
 
     DxcCompiler();
     ~DxcCompiler();
+    DxcCompiler(const DxcCompiler&) = delete;
+    DxcCompiler& operator=(const DxcCompiler&) = delete;
 
-    IDxcBlob* compile(const std::string& shaderSource, bool compilePixelShader, bool compileLibrary, bool compileSpirv);
+    IDxcBlob* compile(const std::string& shaderSource, bool pixelShader);
 };

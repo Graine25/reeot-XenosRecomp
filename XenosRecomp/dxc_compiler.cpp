@@ -2,8 +2,8 @@
 
 DxcCompiler::DxcCompiler()
 {
-    HRESULT hr = DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(&dxcCompiler));
-    assert(SUCCEEDED(hr));
+    if (FAILED(DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(&dxcCompiler))))
+        throw std::runtime_error("Could not create DXC compiler");
 }
 
 DxcCompiler::~DxcCompiler()
@@ -11,94 +11,44 @@ DxcCompiler::~DxcCompiler()
     dxcCompiler->Release();
 }
 
-IDxcBlob* DxcCompiler::compile(const std::string& shaderSource, bool compilePixelShader, bool compileLibrary, bool compileSpirv)
+IDxcBlob* DxcCompiler::compile(const std::string& shaderSource, bool pixelShader)
 {
     DxcBuffer source{};
-    source.Ptr = shaderSource.c_str();
+    source.Ptr = shaderSource.data();
     source.Size = shaderSource.size();
+    source.Encoding = DXC_CP_UTF8;
 
-    const wchar_t* args[32]{};
-    uint32_t argCount = 0;
-
-    const wchar_t* target = nullptr;
-    if (compileLibrary)
-    {
-        assert(!compileSpirv);
-        target = L"-T lib_6_3";
-    }
-    else
-    {
-        if (compilePixelShader)
-            target = L"-T ps_6_0";
-        else
-            target = L"-T vs_6_0";
-    }
-
-    args[argCount++] = target;
-    args[argCount++] = L"-HV 2021";
-    args[argCount++] = L"-all-resources-bound";
-
-    if (compileSpirv)
-    {
-        args[argCount++] = L"-spirv";
-        args[argCount++] = L"-fvk-use-dx-layout";
-
-        if (!compilePixelShader)
-            args[argCount++] = L"-fvk-invert-y";
-    }
-    else
-    {
-        args[argCount++] = L"-Wno-ignored-attributes";
-        args[argCount++] = L"-Qstrip_reflect";
-    }
-
-    args[argCount++] = L"-Qstrip_debug";
-
-    // Keep the HLSL preprocessor in step with how this tool was built so
-    // shader_common.h selects the matching constant layout.
-#ifdef REBLUE_RECOMP
-    args[argCount++] = L"-DREBLUE_RECOMP";
-#elif defined(UNLEASHED_RECOMP)
-    args[argCount++] = L"-DUNLEASHED_RECOMP";
-#endif
+    std::vector<const wchar_t*> args = {
+        L"-T", pixelShader ? L"ps_6_6" : L"vs_6_6",
+        L"-E", L"shaderMain", L"-HV", L"2021",
+        L"-spirv", L"-fspv-target-env=vulkan1.2", L"-fvk-use-dx-layout",
+        L"-DRENGII_RECOMP=1", L"-Qstrip_debug"
+    };
+    if (!pixelShader)
+        args.push_back(L"-fvk-invert-y");
 
     IDxcResult* result = nullptr;
-    HRESULT hr = dxcCompiler->Compile(&source, args, argCount, nullptr, IID_PPV_ARGS(&result));
+    const HRESULT hr = dxcCompiler->Compile(&source, args.data(), uint32_t(args.size()), nullptr, IID_PPV_ARGS(&result));
+    if (FAILED(hr) || !result)
+        throw std::runtime_error("DXC invocation failed");
 
     IDxcBlob* object = nullptr;
-    if (SUCCEEDED(hr))
-    {
-        assert(result != nullptr);
-
-        HRESULT status;
-        hr = result->GetStatus(&status);
-        assert(SUCCEEDED(hr));
-
-        if (FAILED(status))
-        {
-            if (result->HasOutput(DXC_OUT_ERRORS))
-            {
-                IDxcBlobUtf8* errors = nullptr;
-                hr = result->GetOutput(DXC_OUT_ERRORS, IID_PPV_ARGS(&errors), nullptr);
-                assert(SUCCEEDED(hr) && errors != nullptr);
-
-                fputs(errors->GetStringPointer(), stderr);
-
-                errors->Release();
-            }
-        }
-        else
-        {
-            hr = result->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(&object), nullptr);
-            assert(SUCCEEDED(hr) && object != nullptr);
-        }
-
-        result->Release();
-    }
+    HRESULT status = E_FAIL;
+    result->GetStatus(&status);
+    if (SUCCEEDED(status))
+        result->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(&object), nullptr);
     else
     {
-        assert(result == nullptr);
+        IDxcBlobUtf8* errors = nullptr;
+        result->GetOutput(DXC_OUT_ERRORS, IID_PPV_ARGS(&errors), nullptr);
+        std::string message = errors ? errors->GetStringPointer() : "DXC compilation failed";
+        if (errors)
+            errors->Release();
+        result->Release();
+        throw std::runtime_error(message);
     }
-
+    result->Release();
+    if (!object)
+        throw std::runtime_error("DXC returned no shader");
     return object;
 }
