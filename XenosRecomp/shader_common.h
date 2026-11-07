@@ -26,6 +26,7 @@ struct PushConstants
     uint64_t SharedConstants;
     uint64_t GuestMemory;     // [rengii] the game's physical memory, read in place
     uint64_t FetchConstants;  // [rengii] the 32 fetch slots (6 dwords each), host-endian
+    uint64_t GuestMemorySize;
 };
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> g_PushConstants;
@@ -166,13 +167,18 @@ uint rengiiVertexIndex(uint id)
     if (ix.x != 0xFFFFFFFFu)
     {
         const uint endian = (ix.y >> 1) & 3u;
+        const uint a = ix.x + id * ((ix.y & 1u) ? 4u : 2u);
+        if (uint64_t(a & ~3u) + 4u > g_PushConstants.GuestMemorySize)
+        {
+            rengiiRestartVertex = true;
+            return 0;
+        }
         if (ix.y & 1u)
         {
-            v = rengiiSwap(vk::RawBufferLoad<uint>(g_PushConstants.GuestMemory + ((ix.x + id * 4u) & 0x1FFFFFFCu), 4), endian);
+            v = rengiiSwap(vk::RawBufferLoad<uint>(g_PushConstants.GuestMemory + (a & 0x1FFFFFFCu), 4), endian);
         }
         else
         {
-            const uint a = ix.x + id * 2u;
             const uint w = rengiiSwap(vk::RawBufferLoad<uint>(g_PushConstants.GuestMemory + (a & 0x1FFFFFFCu), 4), endian);
             v = (a & 2u) ? (w >> 16) : (w & 0xFFFFu);
         }
@@ -193,6 +199,8 @@ float4 rengiiVertexFetch(uint slot, float indexValue, uint stride, int offset, u
     // the guest's memory - a GPU page fault kills the app on the console; the
     // 16-byte read below stays inside it too)
     const uint at = min((base + uint(index * int(stride) + offset) * 4u) & 0x1FFFFFFCu, 0x1FFFFFF0u);
+    if (uint64_t(at) + 16u > g_PushConstants.GuestMemorySize)
+        return float4(0.0, 0.0, 0.0, 1.0);
     uint4 w = vk::RawBufferLoad<uint4>(g_PushConstants.GuestMemory + at, 4);
     w = uint4(rengiiSwap(w.x, endian), rengiiSwap(w.y, endian), rengiiSwap(w.z, endian), rengiiSwap(w.w, endian));
     // [rengii] One decode for every format (a switch of whole decodes, inlined
@@ -257,7 +265,16 @@ float4 rengiiVertexFetch(uint slot, float indexValue, uint stride, int offset, u
 float4 rengiiVertexFetchK(uint k, float indexValue)
 {
     const uint4 p = vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 1664 + k * 16, 4);
-    return rengiiVertexFetch(p.x & 0xFFu, indexValue, p.x >> 8, int(p.y), p.z, p.w & 0xFFu, int(p.w << 16) >> 24);
+    const float4 value = rengiiVertexFetch(p.x & 0xFFu, indexValue, p.x >> 8, int(p.y), p.z, p.w & 0xFFu, int(p.w << 16) >> 24);
+    if ((p.w & (1u << 28)) == 0)
+        return value;
+    float4 result;
+    [unroll] for (uint i = 0; i < 4; ++i)
+    {
+        const uint component = (p.w >> (16u + i * 3u)) & 7u;
+        result[i] = component < 4u ? value[min(component, 3u)] : float(component - 4u);
+    }
+    return result;
 }
 
 #define g_Booleans(i)              vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 320 + (i)*4)
@@ -463,9 +480,9 @@ static float3 rengiiGradV = 0.0;
 
 float4 tfetch1D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float texCoord)
 {
-    Texture1D<float4> t = g_Texture1DDescriptorHeap[resourceDescriptorIndex];
-    return RENGII_SAMPLE(t, g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord, rengiiGradH.x, rengiiGradV.x);
-    return g_Texture1DDescriptorHeap[resourceDescriptorIndex].Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord);
+    Texture2D<float4> t = g_Texture2DDescriptorHeap[resourceDescriptorIndex];
+    return RENGII_SAMPLE(t, g_SamplerDescriptorHeap[samplerDescriptorIndex], float2(texCoord, 0.5),
+                         float2(rengiiGradH.x, 0.0), float2(rengiiGradV.x, 0.0));
 }
 
 float4 tfetch2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
