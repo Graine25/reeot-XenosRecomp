@@ -449,15 +449,13 @@ float4 applyFetchSign(float4 value, uint biasedMask, uint alphaMask, uint slotIn
 }
 
 #if defined(RENGII_VERTEX_SHADER) && RENGII_VERTEX_SHADER
-// [rengii] Ninja Gaiden II samples textures in vertex shaders, where only an
-// explicit LOD is allowed: the helpers below sample level 0 there.
+// Vertex texture fetches use an explicit LOD.
 #define Sample(samplerState, texCoord) SampleLevel(samplerState, texCoord, 0)
 #endif
 
 // [rengii] How a texture fetch picks its mip, as the hardware does (the SDK's
 // SPIR-V translator, ProcessTextureFetchInstruction): set by the recompiler
-// before each fetch from the instruction's fields - the fetch constant's own
-// LOD bias is in the sampler.
+// before each fetch from the instruction's fields and the fetch constant's LOD bias.
 //   0 the computed LOD;        1 the computed LOD + rengiiLod;
 //   2 the level rengiiLod (UseComputedLod off - and every vertex shader fetch);
 //   3 the gradients set by setGradientH / V, scaled by 2^rengiiLod.
@@ -467,6 +465,13 @@ static float rengiiLod = 0.0;
 static float rengiiRegLod = 0.0;
 static float3 rengiiGradH = 0.0;
 static float3 rengiiGradV = 0.0;
+
+float rengiiTextureLodBias(uint slot)
+{
+    // Metal has no sampler LOD bias, so read the guest's bias in the shader.
+    const uint word = vk::RawBufferLoad<uint>(g_PushConstants.FetchConstants + slot * 24 + 16, 4);
+    return float(int(word << 10) >> 22) * (1.0 / 32.0);
+}
 
 #if defined(RENGII_VERTEX_SHADER) && RENGII_VERTEX_SHADER
 #define RENGII_SAMPLE(t, s, c, gh, gv) t.SampleLevel(s, c, rengiiLodMode == 0 ? 0.0 : rengiiLod)

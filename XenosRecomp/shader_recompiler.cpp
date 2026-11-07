@@ -280,12 +280,12 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
     {
         const float bias = float(instr.lodBias) * (1.0f / 16.0f);
         const bool computed = instr.useCompLod && (isPixelShader || instr.useRegGradients);
-        const uint32_t mode = !computed ? 2u : instr.useRegGradients ? 3u : (instr.useRegLod || bias != 0.0f) ? 1u : 0u;
+        const uint32_t mode = !computed ? 2u : instr.useRegGradients ? 3u : 1u;
         indent();
         if (instr.useRegLod)
-            println("rengiiLodMode = {}; rengiiLod = rengiiRegLod + {};", mode, bias);
+            println("rengiiLodMode = {}; rengiiLod = rengiiRegLod + {} + rengiiTextureLodBias({});", mode, bias, instr.constIndex & 31);
         else
-            println("rengiiLodMode = {}; rengiiLod = {};", mode, bias);
+            println("rengiiLodMode = {}; rengiiLod = {} + rengiiTextureLodBias({});", mode, bias, instr.constIndex & 31);
     }
     indent();
     print("r{}.", instr.dstRegister);
