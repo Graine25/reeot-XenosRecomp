@@ -435,8 +435,27 @@ float3 linearToPWLGamma(float3 lin)
                   linearToPWLGamma1(lin.b));
 }
 
+uint rengiiFloat32To20e4(float f)
+{
+    if (!(f > 0.0))
+        return 0u;
+    uint u = asuint(f);
+    if (u >= 0x3FFFFFF8u)
+        return 0xFFFFFFu;
+    if (u < 0x38800000u)
+        u = (0x800000u | (u & 0x7FFFFFu)) >> min(113u - (u >> 23), 24u);
+    else
+        u += 0xC8000000u;
+    return (u >> 3) & 0xFFFFFFu;
+}
+
 float4 applyFetchSign(float4 value, uint biasedMask, uint alphaMask, uint slotIndex)
 {
+    const uint integerDepth = vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 2960);
+    if (integerDepth & (1u << slotIndex))
+        value.x = float(rengiiFloat32To20e4(value.x));
+    else if (integerDepth & (1u << (16u + slotIndex)))
+        value.x = round(saturate(value.x) * 16777215.0);
     if (biasedMask & (1u << slotIndex))
         value.rgb = value.rgb * 2.0 - 1.0;
     if (alphaMask & (1u << (16u + slotIndex)))
